@@ -199,19 +199,29 @@ def _extract_next_page(html):
 
 
 def get_categories():
-    # Adding a clear User-Agent to mimic a real browser to help with Cloudflare
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
-    }
+    base = _get_base().rstrip("/")
     return [
-        {"title": "🎬 الأفلام الأجنبية", "url": MAIN_URL + "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a-foreign-movies/", "type": "category", "_action": "category"},
-        {"title": "📺 المسلسلات الأجنبية", "url": MAIN_URL + "/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a-foreign-series/", "type": "category", "_action": "category"},
-        {"title": "🎭 عروض المصارعة", "url": MAIN_URL + "/category/%d8%b9%d8%b1%d9%88%d8%b6-%d8%a7%d9%84%d9%85%d8%b5%d8%a7%d8%b1%d8%b9%d8%a9-wrestling/", "type": "category", "_action": "category"},
-        {"title": "📺 مسلسلات عربية", "url": _category_from_home("مسلسلات عربي", _CATEGORY_FALLBACKS["مسلسلات عربي"]), "type": "category", "_action": "category"},
-        {"title": "📺 مسلسلات تركية", "url": _category_from_home("مسلسلات تركية", _CATEGORY_FALLBACKS["مسلسلات تركي"]), "type": "category", "_action": "category"},
-        {"title": "📺 أفلام أنمي", "url": _category_from_home("افلام انمي", _CATEGORY_FALLBACKS["افلام انمي"]), "type": "category", "_action": "category"},
-        {"title": "📺 مسلسلات أنمي", "url": _category_from_home("مسلسلات انمي", _CATEGORY_FALLBACKS["مسلسلات انمي"]), "type": "category", "_action": "category"},
+        {"title": "🎬 الأفلام الأجنبية",
+         "url": base + "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a-foreign-movies/",
+         "type": "category", "_action": "category"},
+        {"title": "📺 المسلسلات الأجنبية",
+         "url": base + "/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a-foreign-series/",
+         "type": "category", "_action": "category"},
+        {"title": "🎭 عروض المصارعة",
+         "url": base + "/category/%d8%b9%d8%b1%d9%88%d8%b6-%d8%a7%d9%84%d9%85%d8%b5%d8%a7%d8%b1%d8%b9%d8%a9-wrestling/",
+         "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات عربية",
+         "url": _category_from_home("مسلسلات عربي", _CATEGORY_FALLBACKS["مسلسلات عربي"]),
+         "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات تركية",
+         "url": _category_from_home("مسلسلات تركية", _CATEGORY_FALLBACKS["مسلسلات تركي"]),
+         "type": "category", "_action": "category"},
+        {"title": "📺 أفلام أنمي",
+         "url": _category_from_home("افلام انمي", _CATEGORY_FALLBACKS["افلام انمي"]),
+         "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات أنمي",
+         "url": _category_from_home("مسلسلات انمي", _CATEGORY_FALLBACKS["مسلسلات انمي"]),
+         "type": "category", "_action": "category"},
     ]
 
 
