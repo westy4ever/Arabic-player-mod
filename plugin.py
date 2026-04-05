@@ -50,7 +50,13 @@ from Tools.LoadPixmap        import LoadPixmap
 from Components.ServiceEventTracker import ServiceEventTracker
 
 # Imports for custom player
-from Screens.InfoBarGenerics import InfoBarSeek, InfoBarShowHide, InfoBarAudioSelection, InfoBarNotifications
+try:
+    from Screens.InfoBarGenerics import (
+        InfoBarSeek, InfoBarShowHide,
+        InfoBarAudioSelection, InfoBarNotifications,
+    )
+except ImportError:
+     pass  # not used directly; safe to ignore on builds that split this module
 
 _PLUGIN_VERSION = "2.0.0"
 _PLUGIN_NAME    = "ArabicPlayer"
@@ -838,20 +844,20 @@ def _wrap_plot_text(text, width=48, max_lines=4):
 
 
 def callInMainThread(func, *args, **kwargs):
-    """
-    Call func on the Enigma2 main thread from a worker thread.
-    Tries multiple methods depending on what's available.
-    """
+    """Schedule func(*args, **kwargs) on the Enigma2 main/reactor thread."""
     try:
         from twisted.internet import reactor
-        reactor.callFromThread(lambda: func(*args, **kwargs))
+        reactor.callFromThread(func, *args, **kwargs)
         return
-    except Exception:
-        pass
-    try:
-        func(*args, **kwargs)
     except Exception as e:
-        my_log("callInMainThread direct error: {}".format(e))
+        my_log("callInMainThread: reactor.callFromThread failed: {}".format(e))
+     # Last-resort: eCallLater(0, ...) schedules on the main loop with 0ms delay.
+     # Still safer than a raw cross-thread call.
+    try:
+        from enigma import eCallLater
+        eCallLater(0, func, *args)
+    except Exception as e2:
+        my_log("callInMainThread: eCallLater fallback also failed: {}".format(e2))
 
 # ─── Local HTTP Proxy (HiSilicon SSL Shield) ─────────────────────────────────
 _PROXY_PORT = 19888
@@ -1309,8 +1315,9 @@ class ArabicPlayerHome(Screen):
 
         # Show poster with debounce (300ms delay to avoid loading during fast scrolling)
         poster_url = item.get("poster") or item.get("image") or ""
-        if not poster_url and item_type in ("movie", "series"):
-            poster_url = _get_tmdb_poster(title, item.get("year"), item_type)
+        # Do NOT call _get_tmdb_poster here — it makes a live HTTP request
+        # on the main Enigma2 thread and will freeze the UI on every scroll.
+        # Poster enrichment happens later in ArabicPlayerDetail._bgLoad.
 
         with self._poster_lock:
             self._requested_poster_url = poster_url
@@ -2166,10 +2173,17 @@ class ArabicPlayerDetail(Screen):
         if idx < 0: return
         
         # If it's a series, open nested detail for episode
-        if self._data and self._data.get("type") == "series":
+        _is_series = bool(
+            self._data and (
+                self._data.get("type") in ("series", "show")
+                or self._item.get("type") in ("series", "show")
+                or self._episodes
+            )
+        )
+        if _is_series:
             if idx >= len(self._episodes): return
             item = self._episodes[idx]
-            self.session.open(ArabicPlayerDetail, item, self._site)
+            self.session.open(ArabicPlayerDetail, item, self._site, "episode")
         else:
             # It's a movie or episode, extract from servers
             if idx >= len(self._servers): return
