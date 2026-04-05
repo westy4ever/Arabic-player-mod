@@ -1020,40 +1020,40 @@ class LocalProxyHandler(http.server.BaseHTTPRequestHandler):
 # ─── Home Screen ─────────────────────────────────────────────────────────────
 class ArabicPlayerHome(Screen):
     skin = """
-    <screen name="ArabicPlayerHome" position="center,center" size="1280,720"
+    <screen name="ArabicPlayerHome" position="center,center" size="2880,1620"
             title="ArabicPlayer" flags="wfNoBorder">
-        <ePixmap position="0,0" size="1280,720" pixmap="{}/images/bg.png" zPosition="0" alphatest="blend" />
+        <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg.png" zPosition="0" alphatest="blend" />
 
         <!-- ═══ Header Bar ═══ -->
-        <widget name="title_bar"  position="0,0"     size="1280,80" backgroundColor="#0D1117" zPosition="1" />
-        <widget name="title_text" position="30,12"   size="500,38"  font="Regular;32" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
-        <widget name="subtitle"   position="30,50"   size="500,24"  font="Regular;17" foregroundColor="#8B949E" transparent="1" zPosition="3" />
-        <widget name="status"     position="700,16"  size="550,28"  font="Regular;19" foregroundColor="#FFD740" transparent="1" halign="right" zPosition="3" />
-        <widget name="footer"     position="700,48"  size="550,24"  font="Regular;16" foregroundColor="#58A6FF" transparent="1" halign="right" zPosition="3" />
+        <widget name="title_bar"  position="0,0"     size="1920,120" backgroundColor="#0D1117" zPosition="1" />
+        <widget name="title_text" position="45,18"   size="750,57"  font="Regular;48" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
+        <widget name="subtitle"   position="45,75"   size="750,36"  font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="3" />
+        <widget name="status"     position="1050,24"  size="825,42"  font="Regular;28" foregroundColor="#FFD740" transparent="1" halign="right" zPosition="3" />
+        <widget name="footer"     position="1050,72"  size="825,36"  font="Regular;24" foregroundColor="#58A6FF" transparent="1" halign="right" zPosition="3" />
 
         <!-- ═══ Menu Panel (Left) ═══ -->
-        <widget name="menu_box"   position="20,95"   size="720,540" backgroundColor="#161B22" zPosition="1" />
-        <widget name="menu"       position="35,110"  size="690,510" zPosition="2"
+        <widget name="menu_box"   position="30,142"   size="1080,810" backgroundColor="#161B22" zPosition="1" />
+        <widget name="menu"       position="52,165"  size="1035,765" zPosition="2"
                 scrollbarMode="showOnDemand"
                 foregroundColor="#F0F6FC"
                 foregroundColorSelected="#00E5FF"
                 backgroundColor="#161B22"
                 backgroundColorSelected="#21262D"
-                font="Regular;26" itemHeight="54" transparent="1" />
+                font="Regular;39" itemHeight="81" transparent="1" />
 
         <!-- ═══ Preview Panel (Right) ═══ -->
-        <widget name="preview_box" position="760,95"  size="500,540" backgroundColor="#1C2333" zPosition="1" />
-        <widget name="poster"      position="810,115" size="400,360" zPosition="3" alphatest="blend" />
-        <widget name="preview_title" position="775,490" size="470,60" font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="3" halign="center" />
-        <widget name="preview_meta"  position="775,555" size="470,28" font="Regular;17" foregroundColor="#00E5FF" transparent="1" zPosition="3" halign="center" />
-        <widget name="preview_info" position="775,588" size="470,36" font="Regular;15" foregroundColor="#8B949E" transparent="1" zPosition="3" halign="center" />
+        <widget name="preview_box" position="1140,142"  size="750,810" backgroundColor="#1C2333" zPosition="1" />
+        <widget name="poster"      position="1215,172" size="600,540" zPosition="3" alphatest="blend" />
+        <widget name="preview_title" position="1162,735" size="705,90" font="Regular;36" foregroundColor="#FFD740" transparent="1" zPosition="3" halign="center" />
+        <widget name="preview_meta"  position="1162,832" size="705,42" font="Regular;26" foregroundColor="#00E5FF" transparent="1" zPosition="3" halign="center" />
+        <widget name="preview_info" position="1162,882" size="705,54" font="Regular;22" foregroundColor="#8B949E" transparent="1" zPosition="3" halign="center" />
 
         <!-- ═══ Button Bar ═══ -->
-        <widget name="btn_bar"    position="0,650"   size="1280,70" backgroundColor="#0D1117" zPosition="1" />
-        <widget name="key_red"    position="30,660"  size="280,28" font="Regular;18" foregroundColor="#FF6B6B" transparent="1" halign="center" zPosition="3" />
-        <widget name="key_green"  position="340,660" size="280,28" font="Regular;18" foregroundColor="#39D98A" transparent="1" halign="center" zPosition="3" />
-        <widget name="key_yellow" position="650,660" size="280,28" font="Regular;18" foregroundColor="#FFD740" transparent="1" halign="center" zPosition="3" />
-        <widget name="key_blue"   position="960,660" size="280,28" font="Regular;18" foregroundColor="#58A6FF" transparent="1" halign="center" zPosition="3" />
+        <widget name="btn_bar"    position="0,975"   size="1920,105" backgroundColor="#0D1117" zPosition="1" />
+        <widget name="key_red"    position="45,990"  size="420,42" font="Regular;27" foregroundColor="#FF6B6B" transparent="1" halign="center" zPosition="3" />
+        <widget name="key_green"  position="510,990" size="420,42" font="Regular;27" foregroundColor="#39D98A" transparent="1" halign="center" zPosition="3" />
+        <widget name="key_yellow" position="975,990" size="420,42" font="Regular;27" foregroundColor="#FFD740" transparent="1" halign="center" zPosition="3" />
+        <widget name="key_blue"   position="1440,990" size="420,42" font="Regular;27" foregroundColor="#58A6FF" transparent="1" halign="center" zPosition="3" />
     </screen>
     """
 
@@ -1602,42 +1602,42 @@ class ArabicPlayerHome(Screen):
 # ─── Search Screen ────────────────────────────────────────────────────────────
 class ArabicPlayerSearch(Screen):
     skin = """
-    <screen name="ArabicPlayerSearch" position="center,center" size="1280,720"
+    <screen name="ArabicPlayerSearch" position="center,center" size="2880,1620"
             flags="wfNoBorder">
-        <ePixmap position="0,0" size="1280,720" pixmap="{}/images/bg_search.png" zPosition="0" alphatest="blend" />
-        <widget name="bg"       position="0,0"   size="1280,720" backgroundColor="#0D1117" zPosition="1" />
+        <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg_search.png" zPosition="0" alphatest="blend" />
+        <widget name="bg"       position="0,0"   size="1920,1080" backgroundColor="#0D1117" zPosition="1" />
 
         <!-- Header -->
-        <widget name="title"    position="40,20" size="600,36"  font="Regular;30" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
-        <widget name="subtitle" position="40,60" size="1200,24" font="Regular;17" foregroundColor="#8B949E" transparent="1" zPosition="3" />
+        <widget name="title"    position="60,30" size="900,54"  font="Regular;45" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
+        <widget name="subtitle" position="60,90" size="1800,36" font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="3" />
 
         <!-- Query Box -->
-        <widget name="query_box" position="40,100" size="1200,70" backgroundColor="#161B22" zPosition="2" />
-        <widget name="query_label" position="60,110" size="120,18" font="Regular;16" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
-        <widget name="query"    position="60,132" size="1160,26" font="Regular;22" foregroundColor="#F0F6FC" transparent="1" zPosition="3" />
+        <widget name="query_box" position="60,150" size="1800,105" backgroundColor="#161B22" zPosition="2" />
+        <widget name="query_label" position="90,165" size="180,27" font="Regular;24" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
+        <widget name="query"    position="90,198" size="1740,39" font="Regular;33" foregroundColor="#F0F6FC" transparent="1" zPosition="3" />
 
         <!-- Scope Box -->
-        <widget name="scope_box" position="40,185" size="1200,48" backgroundColor="#1C2333" zPosition="2" />
-        <widget name="scope_label" position="60,197" size="110,20" font="Regular;16" foregroundColor="#E040FB" transparent="1" zPosition="3" />
-        <widget name="scope"    position="180,196" size="1040,22" font="Regular;19" foregroundColor="#F0F6FC" transparent="1" zPosition="3" />
+        <widget name="scope_box" position="60,278" size="1800,72" backgroundColor="#1C2333" zPosition="2" />
+        <widget name="scope_label" position="90,296" size="165,30" font="Regular;24" foregroundColor="#E040FB" transparent="1" zPosition="3" />
+        <widget name="scope"    position="270,294" size="1560,33" font="Regular;28" foregroundColor="#F0F6FC" transparent="1" zPosition="3" />
 
         <!-- Suggestions -->
-        <widget name="suggestions_box" position="40,248" size="1200,380" backgroundColor="#161B22" zPosition="2" />
-        <widget name="suggestions_title" position="60,260" size="300,20" font="Regular;16" foregroundColor="#FFD740" transparent="1" zPosition="3" />
-        <widget name="suggestions" position="58,290" size="1164,320" zPosition="3"
+        <widget name="suggestions_box" position="60,372" size="1800,570" backgroundColor="#161B22" zPosition="2" />
+        <widget name="suggestions_title" position="90,390" size="450,30" font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="3" />
+        <widget name="suggestions" position="87,435" size="1746,480" zPosition="3"
                 scrollbarMode="showOnDemand"
                 foregroundColor="#F0F6FC"
                 foregroundColorSelected="#00E5FF"
                 backgroundColor="#161B22"
                 backgroundColorSelected="#21262D"
-                font="Regular;21" itemHeight="38" />
+                font="Regular;32" itemHeight="38" />
 
         <!-- Footer -->
-        <widget name="hint"     position="40,640" size="1200,22" font="Regular;15" foregroundColor="#8B949E" transparent="1" zPosition="3" halign="center" />
-        <widget name="key_red"  position="40,668" size="280,22" font="Regular;16" foregroundColor="#FF6B6B" transparent="1" zPosition="3" halign="center" />
-        <widget name="key_green" position="348,668" size="280,22" font="Regular;16" foregroundColor="#39D98A" transparent="1" zPosition="3" halign="center" />
-        <widget name="key_yellow" position="656,668" size="280,22" font="Regular;16" foregroundColor="#FFD740" transparent="1" zPosition="3" halign="center" />
-        <widget name="key_blue" position="964,668" size="280,22" font="Regular;16" foregroundColor="#58A6FF" transparent="1" zPosition="3" halign="center" />
+        <widget name="hint"     position="60,960" size="1800,33" font="Regular;22" foregroundColor="#8B949E" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_red"  position="60,1002" size="420,33" font="Regular;24" foregroundColor="#FF6B6B" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_green" position="522,1002" size="420,33" font="Regular;24" foregroundColor="#39D98A" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_yellow" position="984,1002" size="420,33" font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_blue" position="1446,1002" size="420,33" font="Regular;24" foregroundColor="#58A6FF" transparent="1" zPosition="3" halign="center" />
     </screen>
     """.format(PLUGIN_PATH)
 
@@ -1799,24 +1799,24 @@ class ArabicPlayerSearch(Screen):
 
 class ArabicPlayerSettings(Screen):
     skin = """
-    <screen name="ArabicPlayerSettings" position="center,center" size="1280,720"
+    <screen name="ArabicPlayerSettings" position="center,center" size="2880,1620"
             flags="wfNoBorder">
-        <ePixmap position="0,0" size="1280,720" pixmap="{}/images/bg_settings.png" zPosition="0" alphatest="blend" />
-        <widget name="bg"     position="0,0"   size="1280,720" backgroundColor="#0D1117" zPosition="1" />
+        <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg_settings.png" zPosition="0" alphatest="blend" />
+        <widget name="bg"     position="0,0"   size="1920,1080" backgroundColor="#0D1117" zPosition="1" />
 
         <!-- Header -->
-        <widget name="title"  position="40,20" size="600,38"  font="Regular;30" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
-        <widget name="owner"  position="40,64" size="400,24"  font="Regular;18" foregroundColor="#FFD740" transparent="1" zPosition="3" />
-        <widget name="site"   position="40,92" size="1200,24" font="Regular;16" foregroundColor="#8B949E" transparent="1" zPosition="3" />
+        <widget name="title"  position="60,30" size="900,57"  font="Regular;45" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
+        <widget name="owner"  position="60,96" size="600,36"  font="Regular;27" foregroundColor="#FFD740" transparent="1" zPosition="3" />
+        <widget name="site"   position="60,138" size="1800,36" font="Regular;24" foregroundColor="#8B949E" transparent="1" zPosition="3" />
 
         <!-- Body -->
-        <widget name="body_box" position="40,130" size="1200,480" backgroundColor="#161B22" zPosition="2" />
-        <widget name="body"   position="60,145" size="1160,450" font="Regular;19" foregroundColor="#F0F6FC" transparent="1" zPosition="3" />
+        <widget name="body_box" position="60,195" size="1800,720" backgroundColor="#161B22" zPosition="2" />
+        <widget name="body"   position="90,218" size="1740,675" font="Regular;28" foregroundColor="#F0F6FC" transparent="1" zPosition="3" />
 
         <!-- Footer -->
-        <widget name="hint"   position="40,626" size="1200,24" font="Regular;15" foregroundColor="#8B949E" transparent="1" zPosition="3" halign="center" />
-        <widget name="key_yellow_label" position="300,658" size="300,24" font="Regular;16" foregroundColor="#FFD740" transparent="1" zPosition="3" halign="center" />
-        <widget name="key_blue_label"   position="660,658" size="300,24" font="Regular;16" foregroundColor="#58A6FF" transparent="1" zPosition="3" halign="center" />
+        <widget name="hint"   position="60,939" size="1800,36" font="Regular;22" foregroundColor="#8B949E" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_yellow_label" position="450,987" size="450,36" font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_blue_label"   position="990,987" size="450,36" font="Regular;24" foregroundColor="#58A6FF" transparent="1" zPosition="3" halign="center" />
     </screen>
     """.format(PLUGIN_PATH)
 
@@ -1901,44 +1901,44 @@ class ArabicPlayerSettings(Screen):
 # ─── Detail / Episode Screen ──────────────────────────────────────────────────
 class ArabicPlayerDetail(Screen):
     skin = """
-    <screen name="ArabicPlayerDetail" position="center,center" size="1280,720"
+    <screen name="ArabicPlayerDetail" position="center,center" size="2880,1620"
             flags="wfNoBorder">
-        <ePixmap position="0,0" size="1280,720" pixmap="{}/images/bg_detail.png" zPosition="0" alphatest="blend" />
-        <widget name="bg"          position="0,0"    size="1280,720" backgroundColor="#0D1117" zPosition="1" />
+        <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg_detail.png" zPosition="0" alphatest="blend" />
+        <widget name="bg"          position="0,0"    size="1920,1080" backgroundColor="#0D1117" zPosition="1" />
 
         <!-- Poster Panel -->
-        <widget name="poster_box"  position="30,20"  size="280,400" backgroundColor="#1C2333" zPosition="2" />
-        <widget name="poster"      position="45,35"  size="250,370" zPosition="4" alphatest="blend" />
+        <widget name="poster_box"  position="45,30"  size="420,600" backgroundColor="#1C2333" zPosition="2" />
+        <widget name="poster"      position="68,52"  size="375,555" zPosition="4" alphatest="blend" />
 
         <!-- Info Panel -->
-        <widget name="info_box"    position="330,20" size="920,270" backgroundColor="#161B22" zPosition="2" />
-        <widget name="badge"       position="350,35" size="880,22"  font="Regular;17" foregroundColor="#E040FB" transparent="1" zPosition="4" />
-        <widget name="title"       position="350,62" size="880,60"  font="Regular;28" foregroundColor="#00E5FF" transparent="1" zPosition="4" />
-        <widget name="meta"        position="350,126" size="880,40" font="Regular;18" foregroundColor="#FFD740" transparent="1" zPosition="4" />
-        <widget name="facts"       position="350,170" size="880,28" font="Regular;16" foregroundColor="#8B949E" transparent="1" zPosition="4" />
-        <widget name="source"      position="350,200" size="880,28" font="Regular;16" foregroundColor="#58A6FF" transparent="1" zPosition="4" />
-        <widget name="tmdb_note"   position="350,232" size="880,22" font="Regular;15" foregroundColor="#39D98A" transparent="1" zPosition="4" />
+        <widget name="info_box"    position="495,30" size="1380,405" backgroundColor="#161B22" zPosition="2" />
+        <widget name="badge"       position="525,52" size="1320,33"  font="Regular;26" foregroundColor="#E040FB" transparent="1" zPosition="4" />
+        <widget name="title"       position="525,93" size="1320,90"  font="Regular;42" foregroundColor="#00E5FF" transparent="1" zPosition="4" />
+        <widget name="meta"        position="525,189" size="1320,60" font="Regular;27" foregroundColor="#FFD740" transparent="1" zPosition="4" />
+        <widget name="facts"       position="525,255" size="1320,42" font="Regular;24" foregroundColor="#8B949E" transparent="1" zPosition="4" />
+        <widget name="source"      position="525,300" size="1320,42" font="Regular;24" foregroundColor="#58A6FF" transparent="1" zPosition="4" />
+        <widget name="tmdb_note"   position="525,348" size="1320,33" font="Regular;22" foregroundColor="#39D98A" transparent="1" zPosition="4" />
 
         <!-- Plot Panel -->
-        <widget name="plot_box"    position="330,300" size="920,120" backgroundColor="#1C2333" zPosition="2" />
-        <widget name="plot_title"  position="350,310" size="400,20"  font="Regular;16" foregroundColor="#FFD740" transparent="1" zPosition="4" />
-        <widget name="plot"        position="350,336" size="880,74"  font="Regular;18" foregroundColor="#F0F6FC" transparent="0" backgroundColor="#1C2333" halign="right" valign="top" zPosition="4" />
+        <widget name="plot_box"    position="495,450" size="1380,180" backgroundColor="#1C2333" zPosition="2" />
+        <widget name="plot_title"  position="525,465" size="600,30"  font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="4" />
+        <widget name="plot"        position="525,504" size="1320,111"  font="Regular;27" foregroundColor="#F0F6FC" transparent="0" backgroundColor="#1C2333" halign="right" valign="top" zPosition="4" />
 
         <!-- Menu Panel -->
-        <widget name="menu_box"    position="30,435" size="1220,210" backgroundColor="#161B22" zPosition="2" />
-        <widget name="section"     position="50,442" size="1180,24"  font="Regular;17" foregroundColor="#FFD740" transparent="1" zPosition="4" />
-        <widget name="menu"        position="48,472" size="1184,160" zPosition="4"
+        <widget name="menu_box"    position="45,652" size="1830,315" backgroundColor="#161B22" zPosition="2" />
+        <widget name="section"     position="75,663" size="1770,36"  font="Regular;26" foregroundColor="#FFD740" transparent="1" zPosition="4" />
+        <widget name="menu"        position="72,708" size="1776,240" zPosition="4"
                 scrollbarMode="showOnDemand"
                 foregroundColor="#F0F6FC"
                 foregroundColorSelected="#00E5FF"
                 backgroundColor="#161B22"
                 backgroundColorSelected="#21262D"
-                font="Regular;21" itemHeight="38" />
+                font="Regular;32" itemHeight="57" />
 
         <!-- Footer -->
-        <widget name="key_red"     position="30,660" size="280,24" font="Regular;16" foregroundColor="#FF6B6B" transparent="1" zPosition="4" />
-        <widget name="key_yellow"  position="340,660" size="280,24" font="Regular;16" foregroundColor="#FFD740" transparent="1" zPosition="4" />
-        <widget name="status"      position="660,660" size="580,24"  font="Regular;15" foregroundColor="#8B949E" transparent="1" halign="right" zPosition="4" />
+        <widget name="key_red"     position="45,990" size="420,36" font="Regular;24" foregroundColor="#FF6B6B" transparent="1" zPosition="4" />
+        <widget name="key_yellow"  position="510,990" size="420,36" font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="4" />
+        <widget name="status"      position="990,990" size="870,36"  font="Regular;22" foregroundColor="#8B949E" transparent="1" halign="right" zPosition="4" />
     </screen>
     """.format(PLUGIN_PATH)
 
@@ -2084,8 +2084,10 @@ class ArabicPlayerDetail(Screen):
             plot_label = "{}: {}".format(plot_label, current_title[:32])
         self["plot_title"].setText(_single_line_text(plot_label, width=46, fallback="القصة"))
         plot_text, plot_source = _pick_plot_text_with_source(data, self._item)
+        # Remove provider prefix from plot text
+        plot_text = re.sub(r"^\[.*?\]\s*|^المصدر:\s*.*?\|\s*", "", plot_text)
         my_log("Detail plot source: {} | len={}".format(plot_source, len(plot_text)))
-        self["plot"].setText(_wrap_plot_text(plot_text, width=54, max_lines=3))
+        self["plot"].setText(_wrap_plot_text(plot_text, width=120, max_lines=30))
 
         # Build menu
         self._servers = _sort_servers([s for s in data.get("servers", []) if s.get("url")])
@@ -2427,9 +2429,9 @@ def _restore_previous_service(session, previous_service):
 # ─── Simple Player Fallback ─────────────────────────────────────────────────
 class ArabicPlayerSimplePlayer(Screen):
     skin = """
-    <screen name="ArabicPlayerSimplePlayer" position="0,580" size="1280,140" flags="wfNoBorder" backgroundColor="#000000">
-        <widget name="overlay_bg" position="0,0" size="1280,140" backgroundColor="#0D1117" zPosition="1" />
-        <widget name="status" position="40,50" size="1200,36" font="Regular;26" foregroundColor="#00E5FF" backgroundColor="#000000" transparent="1" halign="center" zPosition="3" />
+    <screen name="ArabicPlayerSimplePlayer" position="0,870" size="1920,210" flags="wfNoBorder" backgroundColor="#000000">
+        <widget name="overlay_bg" position="0,0" size="1920,210" backgroundColor="#0D1117" zPosition="1" />
+        <widget name="status" position="60,75" size="1800,54" font="Regular;39" foregroundColor="#00E5FF" backgroundColor="#000000" transparent="1" halign="center" zPosition="3" />
     </screen>
     """
 
@@ -2593,8 +2595,8 @@ def _play(session, url, title):
 # ─── Splash Screen ───────────────────────────────────────────────────────────
 class ArabicPlayerSplash(Screen):
     skin = """
-    <screen name="ArabicPlayerSplash" position="0,0" size="1280,720" flags="wfNoBorder" backgroundColor="#000000">
-        <widget name="splash_pic" position="0,0" size="1280,720" zPosition="1" alphatest="blend" />
+    <screen name="ArabicPlayerSplash" position="0,0" size="1920,1080" flags="wfNoBorder" backgroundColor="#000000">
+        <widget name="splash_pic" position="0,0" size="1920,1080" zPosition="1" alphatest="blend" />
     </screen>
     """
 
@@ -2613,7 +2615,7 @@ class ArabicPlayerSplash(Screen):
     def _start(self):
         splash_path = os.path.join(PLUGIN_PATH, "images", "splash.png")
         if os.path.exists(splash_path):
-            self.picLoad.setPara((1280, 720, 1, 1, 0, 1, "#000000"))
+            self.picLoad.setPara((1920, 1080, 1, 1, 0, 1, "#000000"))
             self.picLoad.startDecode(splash_path)
         self._timer.start(2500, True)
 
