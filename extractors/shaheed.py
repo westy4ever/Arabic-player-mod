@@ -357,7 +357,7 @@ def extract_stream(url):
             referer = parts[1].split("Referer=")[1].strip()
             
     from .base import resolve_iframe_chain
-    resolved = resolve_iframe_chain(url, referer=referer)
-    if resolved:
-        return resolved, None, referer
+    stream, _ = resolve_iframe_chain(url, referer=referer)
+    if stream:
+        return stream, None, referer
     return url, None, referer

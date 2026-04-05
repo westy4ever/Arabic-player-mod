@@ -57,17 +57,17 @@ def _extract_blocks(html):
             title = _clean_title(title_m.group(1))
             img = _normalize_url(img)
 
-        item_type = "movie"
-        if "مسلسل" in title or "حلقة" in title or "انمي" in title:
-            item_type = "series"
+            item_type = "movie"
+            if "مسلسل" in title or "حلقة" in title or "انمي" in title:
+                item_type = "series"
 
-        items.append({
-            "title": title,
-            "url": link,
-            "poster": img,
-            "type": item_type,
-            "_action": "details"
-        })
+            items.append({
+                "title": title,
+                "url": link,
+                "poster": img,
+                "type": item_type,
+                "_action": "details"
+            })
     return items
 
 def get_category_items(url):
@@ -112,7 +112,7 @@ def get_page(url):
     episodes = []
     item_type = "movie"
 
-    watch_page_html = html
+    watch_page_html = html or ""
     movie_url = final_url
     watch_url = ""
 
@@ -124,6 +124,7 @@ def get_page(url):
     if watch_url_m:
         watch_url = _normalize_url(watch_url_m.group(1))
         watch_page_html, _ = fetch(watch_url, referer=final_url)
+        watch_page_html = watch_page_html or ""
         final_url = watch_url
 
     post_id = ""

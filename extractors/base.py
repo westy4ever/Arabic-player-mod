@@ -327,7 +327,13 @@ def decode_packer(packed):
         k = k.split("|")
         
         def e(c):
-            return (e(c // a) if c >= a else "") + ("0123456789abcdefghijklmnopqrstuvwxyz"[c % a])
+            result = ""
+            while True:
+                result = "0123456789abcdefghijklmnopqrstuvwxyz"[c % a] + result
+                c = c // a
+                if c == 0:
+                    break
+            return result
         
         d = {}
         for i in range(c):

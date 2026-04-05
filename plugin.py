@@ -851,11 +851,12 @@ def callInMainThread(func, *args, **kwargs):
         return
     except Exception as e:
         my_log("callInMainThread: reactor.callFromThread failed: {}".format(e))
-     # Last-resort: eCallLater(0, ...) schedules on the main loop with 0ms delay.
-     # Still safer than a raw cross-thread call.
     try:
         from enigma import eCallLater
-        eCallLater(0, func, *args)
+        if args or kwargs:
+            eCallLater(0, lambda: func(*args, **kwargs))
+        else:
+            eCallLater(0, func)
     except Exception as e2:
         my_log("callInMainThread: eCallLater fallback also failed: {}".format(e2))
 
@@ -1020,7 +1021,7 @@ class LocalProxyHandler(http.server.BaseHTTPRequestHandler):
 # ─── Home Screen ─────────────────────────────────────────────────────────────
 class ArabicPlayerHome(Screen):
     skin = """
-    <screen name="ArabicPlayerHome" position="center,center" size="2880,1620"
+    <screen name="ArabicPlayerHome" position="center,center" size="1920,1080"
             title="ArabicPlayer" flags="wfNoBorder">
         <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg.png" zPosition="0" alphatest="blend" />
 
@@ -1602,7 +1603,7 @@ class ArabicPlayerHome(Screen):
 # ─── Search Screen ────────────────────────────────────────────────────────────
 class ArabicPlayerSearch(Screen):
     skin = """
-    <screen name="ArabicPlayerSearch" position="center,center" size="2880,1620"
+    <screen name="ArabicPlayerSearch" position="center,center" size="1920,1080"
             flags="wfNoBorder">
         <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg_search.png" zPosition="0" alphatest="blend" />
         <widget name="bg"       position="0,0"   size="1920,1080" backgroundColor="#0D1117" zPosition="1" />
@@ -1799,7 +1800,7 @@ class ArabicPlayerSearch(Screen):
 
 class ArabicPlayerSettings(Screen):
     skin = """
-    <screen name="ArabicPlayerSettings" position="center,center" size="2880,1620"
+    <screen name="ArabicPlayerSettings" position="center,center" size="1920,1080"
             flags="wfNoBorder">
         <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg_settings.png" zPosition="0" alphatest="blend" />
         <widget name="bg"     position="0,0"   size="1920,1080" backgroundColor="#0D1117" zPosition="1" />
@@ -1901,7 +1902,7 @@ class ArabicPlayerSettings(Screen):
 # ─── Detail / Episode Screen ──────────────────────────────────────────────────
 class ArabicPlayerDetail(Screen):
     skin = """
-    <screen name="ArabicPlayerDetail" position="center,center" size="2880,1620"
+    <screen name="ArabicPlayerDetail" position="center,center" size="1920,1080"
             flags="wfNoBorder">
         <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg_detail.png" zPosition="0" alphatest="blend" />
         <widget name="bg"          position="0,0"    size="1920,1080" backgroundColor="#0D1117" zPosition="1" />
@@ -1922,7 +1923,7 @@ class ArabicPlayerDetail(Screen):
         <!-- Plot Panel -->
         <widget name="plot_box"    position="495,450" size="1380,180" backgroundColor="#1C2333" zPosition="2" />
         <widget name="plot_title"  position="525,465" size="600,30"  font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="4" />
-        <widget name="plot"        position="525,504" size="1320,111"  font="Regular;27" foregroundColor="#F0F6FC" transparent="0" backgroundColor="#1C2333" halign="right" valign="top" zPosition="4" />
+        <widget name="plot"        position="525,504" size="1320,150"  font="Regular;27" foregroundColor="#F0F6FC" transparent="1" halign="block" valign="top" zPosition="4" />
 
         <!-- Menu Panel -->
         <widget name="menu_box"    position="45,652" size="1830,315" backgroundColor="#161B22" zPosition="2" />
@@ -2086,8 +2087,31 @@ class ArabicPlayerDetail(Screen):
         plot_text, plot_source = _pick_plot_text_with_source(data, self._item)
         # Remove provider prefix from plot text
         plot_text = re.sub(r"^\[.*?\]\s*|^المصدر:\s*.*?\|\s*", "", plot_text)
+        # H: second pass -- strip site names that survived start/end cleaning
+        _MID_SITES = (
+            "EgyDead", "Wecima", "Akoam", "ArabSeed",
+            "TopCinema", "TopCinemaa", "FaselHD", "Shaheed", "Shaheed4u",
+        )
+        for _ms in _MID_SITES:
+            # remove "| SiteName" or "- SiteName" or "SiteName" surrounded by spaces
+            plot_text = re.sub(
+                r"\s*[|\-]\s*" + re.escape(_ms) + r"[^\u0600-\u06ff\n]{0,25}",
+                " ", plot_text, flags=re.I)
+            # remove "على موقع SiteName" type phrases
+            plot_text = re.sub(
+                r"\u0639\u0644\u0649\s+\u0645\u0648\u0642\u0639\s+" + re.escape(_ms)
+                + r"[^\u0600-\u06ff\n]{0,30}",
+                " ", plot_text, flags=re.I)
+        plot_text = re.sub(r"  +", " ", plot_text).strip()
         my_log("Detail plot source: {} | len={}".format(plot_source, len(plot_text)))
-        self["plot"].setText(_wrap_plot_text(plot_text, width=120, max_lines=30))
+        _pt = (plot_text or "").strip()
+        if len(_pt) > 500:
+            _pt = _pt[:500].rsplit(" ", 1)[0] + "…"
+        # G: force RTL paragraph direction for Arabic-dominant text
+        _ar_count = sum(1 for _c in _pt[:80] if "؀" <= _c <= "ۿ")
+        if _ar_count > int(len(_pt[:80]) * 0.3):
+            _pt = "‏" + _pt
+        self["plot"].setText(_pt)
 
         # Build menu
         self._servers = _sort_servers([s for s in data.get("servers", []) if s.get("url")])

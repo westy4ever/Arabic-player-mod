@@ -451,6 +451,10 @@ def _extract_player_sources(html):
 def _vidtube_quality_servers(embed_url):
     html, _ = fetch(embed_url, referer="https://topcinema.fan/")
     if not html:
+        html, _ = fetch(embed_url, referer="https://topcinema.fan/")
+    if not html:
+        html, _ = fetch(embed_url, referer=_get_base())
+    if not html:
         return []
 
     texts = [html]
