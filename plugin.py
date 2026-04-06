@@ -433,7 +433,13 @@ def _entry_from_item(item, site, m_type, extra=None):
 def _upsert_library_item(bucket, entry, limit=100):
     state = _load_state()
     items = state.setdefault(bucket, [])
-    key = entry.get("url")
+    key   = entry.get("url")
+    # preserve last_position_sec saved by the tracker from the previous session
+    if not entry.get("last_position_sec"):
+        for _old in items:
+            if _old.get("url") == key and _old.get("last_position_sec"):
+                entry["last_position_sec"] = _old["last_position_sec"]
+                break
     items = [i for i in items if i.get("url") != key]
     items.insert(0, entry)
     state[bucket] = items[:limit]
@@ -465,6 +471,85 @@ def _history_items():
 
 def _favorite_items():
     return _load_state().get("favorites") or []
+
+
+def _get_saved_position(url):
+    """Return last saved position in seconds (0 if none or < 30s)."""
+    for item in (_load_state().get("history") or []):
+        if item.get("url") == url:
+            pos = int(item.get("last_position_sec") or 0)
+            return pos if pos > 30 else 0
+    return 0
+
+
+def _save_position(url, seconds):
+    """Persist last playback position to the matching history entry."""
+    seconds = int(seconds or 0)
+    if seconds < 10:
+        return
+    state = _load_state()
+    for item in (state.get("history") or []):
+        if item.get("url") == url:
+            item["last_position_sec"] = seconds
+            _save_state(state)
+            return
+
+
+# Global position tracker -- module-level so it survives
+# SimplePlayer -> MoviePlayer screen transitions.
+# Uses wall-clock time instead of getPlayPosition() because
+# HiSilicon (VU+ Duo4K) returns a frozen PTS for HTTP streams.
+_GLOBAL_POS_TIMER      = None
+_GLOBAL_POS_SESSION    = None
+_GLOBAL_POS_ITEM       = ""
+_GLOBAL_PLAY_START_WALL = 0.0   # time.time() when play confirmed
+_GLOBAL_PLAY_START_POS  = 0     # resume_pos at play-start (seconds)
+
+
+def _global_pos_tick():
+    global _GLOBAL_POS_ITEM, _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
+    if not _GLOBAL_POS_ITEM or not _GLOBAL_PLAY_START_WALL:
+        return
+    try:
+        elapsed = time.time() - _GLOBAL_PLAY_START_WALL
+        secs    = int(_GLOBAL_PLAY_START_POS + elapsed)
+        if secs > 30:
+            _save_position(_GLOBAL_POS_ITEM, secs)
+            my_log("Pos tracker (wall-clock): {}s saved for {}".format(
+                secs, _GLOBAL_POS_ITEM[:50]))
+    except Exception as e:
+        my_log("Pos tracker error: {}".format(e))
+
+
+def _start_pos_tracker(session, item_url, start_pos=0):
+    global _GLOBAL_POS_TIMER, _GLOBAL_POS_SESSION, _GLOBAL_POS_ITEM
+    global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
+    _GLOBAL_POS_SESSION     = session
+    _GLOBAL_POS_ITEM        = item_url or ""
+    _GLOBAL_PLAY_START_WALL = time.time()
+    _GLOBAL_PLAY_START_POS  = int(start_pos or 0)
+    if _GLOBAL_POS_TIMER is None:
+        _GLOBAL_POS_TIMER = eTimer()
+        _GLOBAL_POS_TIMER.callback.append(_global_pos_tick)
+    try:
+        _GLOBAL_POS_TIMER.stop()
+    except Exception:
+        pass
+    if _GLOBAL_POS_ITEM:
+        _GLOBAL_POS_TIMER.start(20000, False)
+        my_log("Pos tracker started (wall-clock base={}s): {}".format(
+            _GLOBAL_PLAY_START_POS, item_url[:50]))
+
+
+def _stop_pos_tracker():
+    global _GLOBAL_POS_ITEM
+    _GLOBAL_POS_ITEM = ""
+    try:
+        if _GLOBAL_POS_TIMER:
+            _GLOBAL_POS_TIMER.stop()
+    except Exception:
+        pass
+
 
 
 def _library_search_suggestions(query="", current_site="", limit=8):
@@ -2334,9 +2419,24 @@ class ArabicPlayerDetail(Screen):
             # Enigma2 uses # mapping for HTTP headers, not |
             url = pure_url + "#" + header_str if header_str else pure_url
             
-            self["status"].setText("جاري فتح المشغل...")
-            _play(self.session, url, title)
-            # hide processing text after launching
+            _item_url   = self._item.get("url", "")
+            _saved_pos  = _get_saved_position(_item_url)
+            if _saved_pos > 30:
+                _mins_r = _saved_pos // 60
+                _secs_r = _saved_pos % 60
+                def _on_resume(_ans, _u=url, _t=title, _iu=_item_url, _sp=_saved_pos):
+                    if not _ans:
+                        # user chose 'from start' -- wipe stale resume point
+                        _save_position(_iu, 0)
+                    _play(self.session, _u, _t, resume_pos=_sp if _ans else 0, item_url=_iu)
+                self["status"].setText("جاري فتح المشغل...")
+                self.session.openWithCallback(
+                    _on_resume, MessageBox,
+                    "استئناف من {}:{:02d}؟".format(_mins_r, _secs_r),
+                    MessageBox.TYPE_YESNO, timeout=8, default=True)
+            else:
+                self["status"].setText("جاري فتح المشغل...")
+                _play(self.session, url, title, resume_pos=0, item_url=_item_url)
             self["status"].hide()
 
         except Exception as e:
@@ -2459,7 +2559,7 @@ class ArabicPlayerSimplePlayer(Screen):
     </screen>
     """
 
-    def __init__(self, session, title, candidates, previous_service=None):
+    def __init__(self, session, title, candidates, previous_service=None, resume_pos=0, item_url=""):
         Screen.__init__(self, session)
         self["overlay_bg"] = Label("")
         self["status"] = Label("جاري التشغيل...")
@@ -2474,6 +2574,10 @@ class ArabicPlayerSimplePlayer(Screen):
         self._candidate_label = ""
         self._handoff = False
         self._restored_previous = False
+        self._resume_pos = int(resume_pos or 0)
+        self._item_url  = item_url or ""
+        self._seek_timer = eTimer()
+        self._seek_timer.callback.append(self.__doSeek)
         self["actions"] = ActionMap(["OkCancelActions"], {"cancel": self.close, "ok": self.close}, -1)
         self._retry_timer = eTimer()
         self._retry_timer.callback.append(self.__onTimeout)
@@ -2517,7 +2621,7 @@ class ArabicPlayerSimplePlayer(Screen):
             pass
         try:
             self.session.nav.playService(self.sref)
-            self._retry_timer.start(7000, True)
+            self._retry_timer.start(12000, True)
         except Exception as e:
             my_log("SimplePlayer fallback error: {}".format(e))
             self.__playNext()
@@ -2530,10 +2634,13 @@ class ArabicPlayerSimplePlayer(Screen):
             pass
         self["status"].setText(self.title)
         my_log("Play confirmed: {}".format(self._candidate_label))
+        _start_pos_tracker(self.session, self._item_url, start_pos=self._resume_pos)
+        if self._resume_pos > 30:
+            self._seek_timer.start(2000, True)
         try:
             from Screens.InfoBar import MoviePlayer
             self._handoff = True
-            callback = lambda *args: self.__restorePrevious()
+            callback = lambda *args: (_stop_pos_tracker(), self.__restorePrevious())
             try:
                 self.session.openWithCallback(callback, MoviePlayer, self.sref, streamMode=True, askBeforeLeaving=False)
             except TypeError:
@@ -2565,9 +2672,31 @@ class ArabicPlayerSimplePlayer(Screen):
         my_log("Play timeout: {}".format(self._candidate_label))
         self.__playNext()
 
+    def __doSeek(self):
+        if not self._resume_pos or self._resume_pos <= 30:
+            my_log("Seek skipped: resume_pos={}".format(self._resume_pos))
+            return
+        try:
+            svc  = self.session.nav.getCurrentService()
+            seek = svc and svc.seek()
+            if seek:
+                seek.seekTo(self._resume_pos * 90000)
+                my_log("Resume: seeked to {}s".format(self._resume_pos))
+            else:
+                my_log("Seek skipped: no seek interface available")
+        except Exception as e:
+            my_log("Seek failed: {}".format(e))
+
     def __stop(self):
         if self._handoff:
+            # MoviePlayer callback handles tracker + restore
             return
+        # manual cancel: stop everything and restore previous service
+        _stop_pos_tracker()
+        try:
+            self._seek_timer.stop()
+        except Exception:
+            pass
         try:
             self._retry_timer.stop()
         except Exception:
@@ -2584,14 +2713,14 @@ class ArabicPlayerSimplePlayer(Screen):
         self._restored_previous = True
         _restore_previous_service(self.session, self.previous_service)
 
-def _play(session, url, title):
+def _play(session, url, title, resume_pos=0, item_url=""):
     try:
         svc_url = str(url).strip()
         is_remote = svc_url.startswith("http://") or svc_url.startswith("https://")
         previous_service = _capture_previous_service(session)
 
         if is_remote:
-            session.open(ArabicPlayerSimplePlayer, title, _build_remote_play_candidates(svc_url), previous_service)
+            session.open(ArabicPlayerSimplePlayer, title, _build_remote_play_candidates(svc_url), previous_service, resume_pos=resume_pos, item_url=item_url)
             return
 
         sref = eServiceReference(4097, 0, svc_url)
