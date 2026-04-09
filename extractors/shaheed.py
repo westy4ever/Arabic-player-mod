@@ -2,6 +2,7 @@
 import re
 import sys
 import json
+import time
 
 from .base import fetch, urljoin, log
 
@@ -15,18 +16,27 @@ else:
     html_unescape = HTMLParser().unescape
 
 
+# Updated domain list with working mirrors
 DOMAINS = [
-    "https://shaheeid4u.net/",
+    "https://shahieed4u.net/",      # Current working (user provided)
+    "https://shaheeid4u.net/",      # Original (may redirect)
+    "https://shahid4u.guru/",       # Active mirror
+    "https://shahid4u.boutique/",   # Another mirror
+    "https://shhahhid4u.net/",      # Redirects to shah4u.media
 ]
+
 VALID_HOST_MARKERS = (
+    "shahieed4u.net",
     "shaheeid4u.net",
     "shahid4u",
+    "shhahhid4u",
 )
 BLOCKED_HOST_MARKERS = (
     "alliance4creativity.com",
 )
 MAIN_URL = None
 _HOME_HTML = None
+_HOME_LAST_FETCH = 0
 
 _CATEGORY_FALLBACKS = {
     "افلام اجنبي": "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a",
@@ -75,9 +85,10 @@ def _site_root(url):
     return "{}://{}/".format(parts.scheme or "https", parts.netloc)
 
 
-def _get_base():
-    global MAIN_URL, _HOME_HTML
-    if MAIN_URL:
+def _get_base(force_refresh=False):
+    global MAIN_URL, _HOME_HTML, _HOME_LAST_FETCH
+    # Refresh home page every 6 hours
+    if MAIN_URL and not force_refresh and (time.time() - _HOME_LAST_FETCH) < 21600:
         return MAIN_URL
     for domain in DOMAINS:
         log("Shaheed: probing base {}".format(domain))
@@ -86,11 +97,13 @@ def _get_base():
         if _is_blocked_page(html, final_url):
             log("Shaheed: blocked base {}".format(final_url))
             continue
-        if html and "shah" in html.lower():
+        if html and ("shah" in html.lower() or "film" in html.lower()):
             MAIN_URL = _site_root(final_url)
             _HOME_HTML = html
+            _HOME_LAST_FETCH = time.time()
             log("Shaheed: selected base {}".format(MAIN_URL))
             return MAIN_URL
+    # Fallback: first domain
     MAIN_URL = DOMAINS[0]
     log("Shaheed: fallback base {}".format(MAIN_URL))
     return MAIN_URL
@@ -104,10 +117,8 @@ def _quote_url(url):
     if not url: return url
     try:
         from urllib.parse import urlparse, urlunparse, quote, unquote
-        # Force unquote first to ensure we don't double-encode % characters
         url_dec = unquote(url)
         p = list(urlparse(url_dec))
-        # Quote only the path and query parts
         p[2] = quote(p[2])
         p[4] = quote(p[4], safe='=&/%')
         return urlunparse(p)
@@ -188,6 +199,24 @@ def _extract_cards(html):
                 "type": "series" if "/series" in url or "/season" in url else ("episode" if "/episode" in url else "movie"),
                 "_action": "item",
             })
+
+    if not items:
+        seen_fb = set()
+        _lp = re.compile(r'<a[^>]+href=["\']([^"\']+/(?:film|series|episode|anime|watch)/[^"\']+)["\'][^>]*>(.*?)</a>', re.S|re.I)
+        _ip = re.compile(r'(?:data-src|src)=["\']([^"\']+\.(?:jpe?g|png|webp)[^"\']*)["\']', re.I)
+        _tp = re.compile(r'class=["\'][^"\']*title[^"\']*["\'][^>]*>([^<]+)<|alt=["\']([^"\']+)["\']', re.I)
+        for hm in _lp.finditer(html or ""):
+            url_fb = _normalize_url(hm.group(1))
+            inner  = hm.group(2)
+            if url_fb in seen_fb: continue
+            seen_fb.add(url_fb)
+            im = _ip.search(inner)
+            img_fb = _normalize_url(im.group(1)) if im else ""
+            tm = _tp.search(inner)
+            title_fb = html_unescape((tm.group(1) or tm.group(2) or "").strip()) if tm else ""
+            if not title_fb: continue
+            itype = "series" if "/series" in url_fb else ("episode" if "/episode" in url_fb else "movie")
+            items.append({"title":title_fb,"url":url_fb,"poster":img_fb,"type":itype,"_action":"item"})
     return items
 
 
@@ -273,7 +302,6 @@ def _detail_plot(html):
 
 
 def get_page(url):
-    # Shaheed4u places servers on a separate generic player page, or inline via JSON.
     html, final_url = _fetch_live(url)
     if not html:
         log("Shaheed: detail failed {}".format(url))
@@ -288,7 +316,7 @@ def get_page(url):
 
     # Could be a series page
     if "/series/" in final_url or "مسلسل" in title:
-        ep_cards = re.findall(r'<a[^>]+href=["\'](https://shaheeid4u\.net/episode/[^"\']+)["\'][^>]*class=["\']ep-card["\'][^>]*>.*?<span[^>]*>([^<]+)</span>', html, re.S)
+        ep_cards = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+/episode/[^"\']+)["\'][^>]*class=["\']ep-card["\'][^>]*>.*?<span[^>]*>([^<]+)</span>', html, re.S)
         for ep_url, ep_title in ep_cards:
             episodes.append({
                 "title": html_unescape(ep_title.strip()),
@@ -305,24 +333,37 @@ def get_page(url):
     
     if watch_page_link:
         wh, wfinal = _fetch_live(watch_page_link, referer=final_url)
+        # Try to find servers in various patterns
         js_servers = re.search(r'let servers = JSON\.parse\(\'(.*?)\'\)', wh)
+        if not js_servers:
+            js_servers = re.search(r'var servers = (\[.*?\])', wh, re.S)
+        if not js_servers:
+            js_servers = re.search(r'"servers"\s*:\s*(\[.*?\])', wh, re.S)
         if js_servers:
             try:
-                srv_data = json.loads(js_servers.group(1))
+                srv_str = js_servers.group(1)
+                srv_str = srv_str.replace("'", '"')
+                srv_data = json.loads(srv_str)
                 for s in srv_data:
                     if s.get("url"):
                         servers.append({
-                            "name": s.get("name", "Server"),
+                            "name": s.get("name", s.get("label", "Server")),
                             "url": s["url"] + "|Referer=" + _site_root(final_url)
                         })
             except Exception as e:
                 log("Shaheed: JSON decode error: {}".format(e))
+                urls = re.findall(r'(https?://[^\s"\']+\.(?:m3u8|mp4)[^\s"\']*)', wh)
+                for u in urls:
+                    servers.append({"name": "Stream", "url": u + "|Referer=" + _site_root(final_url)})
     else:
-        # Fallback: Maybe they are inline
+        # Fallback: servers inline
         js_servers = re.search(r'let servers = JSON\.parse\(\'(.*?)\'\)', html)
+        if not js_servers:
+            js_servers = re.search(r'var servers = (\[.*?\])', html, re.S)
         if js_servers:
             try:
-                srv_data = json.loads(js_servers.group(1))
+                srv_str = js_servers.group(1).replace("'", '"')
+                srv_data = json.loads(srv_str)
                 for s in srv_data:
                     if s.get("url"):
                         servers.append({
@@ -357,7 +398,7 @@ def extract_stream(url):
             referer = parts[1].split("Referer=")[1].strip()
             
     from .base import resolve_iframe_chain
-    stream, _ = resolve_iframe_chain(url, referer=referer)
+    stream, _ = resolve_iframe_chain(url, referer=referer, max_depth=6)
     if stream:
         return stream, None, referer
     return url, None, referer

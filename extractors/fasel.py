@@ -11,7 +11,16 @@ else:
     from HTMLParser import HTMLParser
     html_unescape = HTMLParser().unescape
 
-DOMAINS = ["https://web33012x.faselhdx.bid", "https://faselhd.center", "https://www.faselhdx.bid", "https://faselhd.fm", "https://www.fasel-hd.com"]
+DOMAINS = [
+    "https://www.faselhd.cam",
+    "https://faselhd.pro",
+    "https://faselhd.cc",
+    "https://web33012x.faselhdx.bid",
+    "https://faselhd.center",
+    "https://www.faselhdx.bid",
+    "https://faselhd.fm",
+    "https://www.fasel-hd.com",
+]
 MAIN_URL = DOMAINS[0]
 
 BLOCKED_MARKERS = ("alliance4creativity", "watch-it-legally")
@@ -64,20 +73,32 @@ def _extract_items(html):
     
     for href, img, title in matches:
         title = _clean_title(title)
-        href = _normalize_url(href)
-        img = _normalize_url(img)
-        
+        href  = _normalize_url(href)
+        img   = _normalize_url(img)
         item_type = "movie"
         if any(x in title for x in [u"مسلسل", u"انمي", u"موسم"]):
             item_type = "series"
-            
-        items.append({
-            "title": title,
-            "url": href,
-            "poster": img,
-            "type": item_type,
-            "_action": "item"
-        })
+        items.append({"title": title, "url": href, "poster": img,
+                      "type": item_type, "_action": "item"})
+
+    if not items:
+        seen_fb = set()
+        _ip = re.compile(r'(?:data-src|data-lazy|src)=["\']([^"\']+\.(?:jpe?g|png|webp)[^"\']*)["\']', re.I)
+        _tp = re.compile(r'<h[0-9][^>]*>([^<]+)</h[0-9]>|alt=["\']([^"\']+)["\']', re.I)
+        for block in re.findall(r"<(?:div|article|li)[^>]+>.*?</(?:div|article|li)>", html or "", re.S|re.I):
+            hm = re.search(r'href=["\']([^"\']+)["\']', block, re.I)
+            if not hm: continue
+            href_fb = _normalize_url(hm.group(1))
+            if not href_fb or href_fb in seen_fb: continue
+            if not any(x in href_fb for x in ("/movie","/film","/series","/episode","?p=")): continue
+            im = _ip.search(block)
+            img_fb = _normalize_url(im.group(1)) if im else ""
+            tm = _tp.search(block)
+            title_fb = _clean_title((tm.group(1) or tm.group(2) or "").strip()) if tm else ""
+            if not title_fb: continue
+            seen_fb.add(href_fb)
+            itype = "series" if u"مسلسل" in title_fb else "movie"
+            items.append({"title":title_fb,"url":href_fb,"poster":img_fb,"type":itype,"_action":"item"})
     return items
 
 def get_category_items(url):

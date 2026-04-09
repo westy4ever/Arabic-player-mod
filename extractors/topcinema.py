@@ -55,6 +55,17 @@ def _extract_blocks(html):
         if link_m and title_m:
             link = _normalize_url(link_m.group(1))
             title = _clean_title(title_m.group(1))
+            if not img or img.strip() in ("", "http:", "https:"):
+                for _ipat in [
+                    r'data-lazy=["\']([^"\']+\.(?:jpe?g|png|webp)[^"\']*)["\']',
+                    r'data-original=["\']([^"\']+\.(?:jpe?g|png|webp)[^"\']*)["\']',
+                    r'data-bg=["\']([^"\']+\.(?:jpe?g|png|webp)[^"\']*)["\']',
+                    r'background(?:-image)?:\s*url\(["\']?([^"\')\s]+)',
+                ]:
+                    _im = re.search(_ipat, block_html, re.I)
+                    if _im:
+                        img = _im.group(1).strip("'\" ")
+                        break
             img = _normalize_url(img)
 
             item_type = "movie"

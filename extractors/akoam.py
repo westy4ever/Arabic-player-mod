@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import re
-from .base import fetch, urljoin
+from urllib.parse import urljoin  # FIX: use standard library, not from base
+from .base import fetch
 
 MAIN_URL = "https://ak.sv/"
 

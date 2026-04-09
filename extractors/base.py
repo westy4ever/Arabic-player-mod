@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """
 Base extractor — common utilities + video host resolvers
-Hosts supported: Streamtape, Doodstream, Vidbom, Upstream, Govid, Uqload
+Hosts supported: Streamtape, Doodstream, Vidbom, Upstream, Govid, Uqload, Mixdrop, Voe, etc.
 """
 
 import re
 import json
 import time
+import random  # FIX: moved import to top
 import urllib.request
 from urllib.request import Request, urlopen, build_opener, HTTPCookieProcessor, HTTPSHandler
-from urllib.parse import urljoin, urlparse, unquote, urlencode
+from urllib.parse import urljoin, urlparse, unquote, urlencode  # FIX: export urljoin
 from urllib.error import URLError, HTTPError
 import http.cookiejar as cookiejar
 import ssl
@@ -159,6 +160,8 @@ def fetch(url, referer=None, extra_headers=None, post_data=None):
         return None, url
     except URLError as e:
         log("Fetch URLError: {} -> {}".format(url, e))
+        global _opener
+        _opener = None  # rebuild SSL context on next request
         return None, url
     except Exception as e:
         log("Fetch Error: {} -> {}".format(url, e))
@@ -417,7 +420,7 @@ def resolve_doodstream(url):
         if not token_html:
             return None
         chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-        rand = "".join(__import__("random").choice(chars) for _ in range(10))
+        rand = "".join(random.choice(chars) for _ in range(10))  # FIX: use top-level random
         return token_html.strip() + rand + "?token=" + pass_path.split("/")[-1] + "&expiry=" + str(int(time.time() * 1000))
     except Exception:
         pass
@@ -719,12 +722,33 @@ def _get_stream_autoembed(tmdb_id, m_type, season=None, episode=None):
     if not html: return None
     return find_m3u8(html) or find_mp4(html)
 
+def _get_stream_vidsrc(tmdb_id, m_type, season=None, episode=None):
+    """FIX: Added resolver for vidsrc:// scheme"""
+    if m_type == "movie":
+        url = "https://vidsrc.me/embed/movie/{}".format(tmdb_id)
+    else:
+        s, e = season or "1", episode or "1"
+        url = "https://vidsrc.me/embed/tv/{}/{}/{}".format(tmdb_id, s, e)
+    html, _ = fetch(url, referer="https://vidsrc.me/")
+    if not html:
+        return None
+    # Try to find iframe redirect or direct source
+    m = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I)
+    if m:
+        iframe_url = m.group(1)
+        if iframe_url.startswith("//"): iframe_url = "https:" + iframe_url
+        h2, _ = fetch(iframe_url, referer=url)
+        if h2:
+            return find_m3u8(h2) or find_mp4(h2)
+    return find_m3u8(html) or find_mp4(html)
+
 _PREMIUM_METHODS = {
     "moviesapi":   _get_stream_moviesapi,
     "multiembed":  _get_stream_multiembed,
     "superembed":  _get_stream_superembed,
     "2embed":      _get_stream_2embed,
     "autoembed":   _get_stream_autoembed,
+    "vidsrc":      _get_stream_vidsrc,   # FIX: added vidsrc handler
 }
 
 def get_premium_servers(m_type, tmdb_id, season=None, episode=None):
@@ -796,7 +820,7 @@ def resolve_host(url, referer=None):
 
 
 
-def resolve_iframe_chain(url, referer=None, depth=0, max_depth=4):
+def resolve_iframe_chain(url, referer=None, depth=0, max_depth=6):
     """
     Follows a chain of iframes/redirects to find a playable stream.
     Supports src, data-src, data-url attributes.

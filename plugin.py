@@ -355,6 +355,12 @@ def _state_path():
     return "/tmp/arabicplayer_state.json"
 
 
+# Thread-safe main-loop dispatcher
+_CMIT_QUEUE = []
+_CMIT_LOCK  = threading.Lock()
+_CMIT_TIMER = None
+
+
 def _default_state():
     return {
         "config": {
@@ -389,11 +395,17 @@ def _save_state(state=None):
     global _STATE_CACHE
     _STATE_CACHE = state or _load_state()
     path = _state_path()
+    tmp  = path + ".tmp"
     try:
-        with open(path, "w") as f:
+        with open(tmp, "w") as f:
             json.dump(_STATE_CACHE, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp, path)
     except Exception as e:
         my_log("State save error: {}".format(e))
+        try: os.remove(tmp)
+        except Exception: pass
 
 
 def _get_config(key, default=""):
@@ -483,10 +495,15 @@ def _get_saved_position(url):
 
 
 def _save_position(url, seconds):
-    """Persist last playback position to the matching history entry."""
+    """Persist last playback position to the matching history entry.
+    Pass seconds=0 to explicitly clear the resume point.
+    Positions 1-29s are ignored (not worth resuming).
+    """
     seconds = int(seconds or 0)
-    if seconds < 10:
+    if 0 < seconds < 30:
+        my_log("_save_position: skipping {}s (< 30s threshold)".format(seconds))
         return
+    # seconds == 0 means explicit clear -- allow it through
     state = _load_state()
     for item in (state.get("history") or []):
         if item.get("url") == url:
@@ -502,8 +519,9 @@ def _save_position(url, seconds):
 _GLOBAL_POS_TIMER      = None
 _GLOBAL_POS_SESSION    = None
 _GLOBAL_POS_ITEM       = ""
-_GLOBAL_PLAY_START_WALL = 0.0   # time.time() when play confirmed
-_GLOBAL_PLAY_START_POS  = 0     # resume_pos at play-start (seconds)
+_GLOBAL_PLAY_START_WALL  = 0.0   # time.time() when play confirmed
+_GLOBAL_PLAY_START_POS   = 0     # resume_pos at play-start (seconds)
+_GLOBAL_LAST_SEEK_TARGET = -1    # last seekTo target in seconds (-1=none)
 
 
 def _global_pos_tick():
@@ -513,10 +531,11 @@ def _global_pos_tick():
     try:
         elapsed = time.time() - _GLOBAL_PLAY_START_WALL
         secs    = int(_GLOBAL_PLAY_START_POS + elapsed)
-        if secs > 30:
-            _save_position(_GLOBAL_POS_ITEM, secs)
-            my_log("Pos tracker (wall-clock): {}s saved for {}".format(
-                secs, _GLOBAL_POS_ITEM[:50]))
+        if secs < 5:
+            my_log("Pos tracker: skipping suspicious pos {}s".format(secs))
+            return
+        _save_position(_GLOBAL_POS_ITEM, secs)
+        my_log("Pos tracker saved: {}s for {}".format(secs, _GLOBAL_POS_ITEM[:50]))
     except Exception as e:
         my_log("Pos tracker error: {}".format(e))
 
@@ -524,6 +543,8 @@ def _global_pos_tick():
 def _start_pos_tracker(session, item_url, start_pos=0):
     global _GLOBAL_POS_TIMER, _GLOBAL_POS_SESSION, _GLOBAL_POS_ITEM
     global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
+    global _GLOBAL_LAST_SEEK_TARGET
+    _GLOBAL_LAST_SEEK_TARGET = -1  # reset on each new play session
     _GLOBAL_POS_SESSION     = session
     _GLOBAL_POS_ITEM        = item_url or ""
     _GLOBAL_PLAY_START_WALL = time.time()
@@ -928,22 +949,37 @@ def _wrap_plot_text(text, width=48, max_lines=4):
     return text
 
 
+def _drain_cmit_queue():
+    """Drain callInMainThread queue on Enigma2 main loop."""
+    with _CMIT_LOCK:
+        items = list(_CMIT_QUEUE)
+        del _CMIT_QUEUE[:]
+    for _f, _a, _kw in items:
+        try: _f(*_a, **_kw)
+        except Exception as _e:
+            try: my_log("CMIT drain: {}".format(_e))
+            except Exception: pass
+
+
 def callInMainThread(func, *args, **kwargs):
-    """Schedule func(*args, **kwargs) on the Enigma2 main/reactor thread."""
-    try:
-        from twisted.internet import reactor
-        reactor.callFromThread(func, *args, **kwargs)
-        return
-    except Exception as e:
-        my_log("callInMainThread: reactor.callFromThread failed: {}".format(e))
-    try:
-        from enigma import eCallLater
-        if args or kwargs:
-            eCallLater(0, lambda: func(*args, **kwargs))
-        else:
-            eCallLater(0, func)
-    except Exception as e2:
-        my_log("callInMainThread: eCallLater fallback also failed: {}".format(e2))
+    """Queue func for Enigma2 main loop via eTimer (50ms).
+    Avoids direct cross-thread calls that crash HiSilicon builds."""
+    global _CMIT_TIMER
+    with _CMIT_LOCK:
+        _CMIT_QUEUE.append((func, args, kwargs))
+    if _CMIT_TIMER is None:
+        try:
+            _CMIT_TIMER = eTimer()
+            _CMIT_TIMER.callback.append(_drain_cmit_queue)
+        except Exception: pass
+    if _CMIT_TIMER is not None:
+        try: _CMIT_TIMER.start(50, True)
+        except Exception: pass
+    else:
+        try:
+            from twisted.internet import reactor
+            reactor.callFromThread(_drain_cmit_queue)
+        except Exception: pass
 
 # ─── Local HTTP Proxy (HiSilicon SSL Shield) ─────────────────────────────────
 _PROXY_PORT = 19888
@@ -2083,13 +2119,22 @@ class ArabicPlayerDetail(Screen):
         threading.Thread(target=self._bgLoad, args=(self._site, self._item["url"], self._m_type), daemon=True).start() # Pass site, url, m_type
 
     def _bgLoad(self, site, url, m_type):
+        _done = [False]
+        def _watchdog():
+            if not _done[0]:
+                my_log("_bgLoad watchdog: timeout for {}".format(url[:60]))
+                callInMainThread(self["status"].setText,
+                    u"Timeout — please try again")
+        _wt = threading.Timer(30, _watchdog)
+        _wt.daemon = True
+        _wt.start()
         try:
             from extractors.base import log
             log("Detail _bgLoad: START site={}, m_type={}".format(site, m_type))
             extractor = _get_extractor(site)
             get_page = getattr(extractor, "get_page", None)
             if not get_page:
-                callInMainThread(self["status"].setText, "لا توجد بيانات")
+                callInMainThread(self["status"].setText, u"لا توجد بيانات")
                 return
             if site == "egydead":
                 data = get_page(url, m_type=m_type)
@@ -2098,11 +2143,25 @@ class ArabicPlayerDetail(Screen):
             merged_seed = dict(self._item or {})
             merged_seed.update(data or {})
             data = _merge_tmdb_data(merged_seed)
+            _done[0] = True
             callInMainThread(self._onLoaded, data)
         except Exception as e:
+            _done[0] = True
             from extractors.base import log
-            log("ArabicPlayerDetail._bgLoad error: {}".format(e))
-            callInMainThread(self["status"].setText, "فشل التحميل")
+            log("_bgLoad error: {} -- trying TMDb fallback".format(e))
+            try:
+                fallback = _merge_tmdb_data(dict(self._item or {}))
+                if fallback and (fallback.get("plot") or fallback.get("poster")):
+                    callInMainThread(self._onLoaded, fallback)
+                else:
+                    callInMainThread(self["status"].setText,
+                        u"فشل التحميل — {}".format(str(e)[:40]))
+            except Exception as e2:
+                log("TMDb fallback failed: {}".format(e2))
+                callInMainThread(self["status"].setText,
+                    u"فشل التحميل — {}".format(str(e)[:40]))
+        finally:
+            _wt.cancel()
 
     def _onCancel(self):
         try:
@@ -2296,13 +2355,19 @@ class ArabicPlayerDetail(Screen):
             item = self._episodes[idx]
             self.session.open(ArabicPlayerDetail, item, self._site, "episode")
         else:
-            # It's a movie or episode, extract from servers
-            if idx >= len(self._servers): return
-            server = self._servers[idx]
-            self["status"].setText("جاري استخراج الرابط...")
-            self["status"].show()
-            # MUST run in background thread — network I/O blocks main thread
-            threading.Thread(target=self._bgExtract, args=(server,), daemon=True).start()
+            # movie / episode: open quality picker then extract
+            if not self._servers: return
+            movie_title = self["title"].getText()
+            if len(self._servers) == 1:
+                # single server -- skip picker, go direct
+                self._launchServer(self._servers[0])
+            else:
+                self.session.open(
+                    ArabicPlayerQualityPicker,
+                    movie_title,
+                    self._servers,
+                    self._launchServer
+                )
 
     def _toggleFavorite(self):
         base = self._data or self._item
@@ -2331,6 +2396,12 @@ class ArabicPlayerDetail(Screen):
         except Exception as e:
             my_log("TMDb refresh failed: {}".format(e))
             callInMainThread(self["status"].setText, "فشل تحديث TMDb")
+
+    def _launchServer(self, server):
+        """Called after quality picker selection (or direct for single server)."""
+        self["status"].setText(u"Extracting stream...")
+        self["status"].show()
+        threading.Thread(target=self._bgExtract, args=(server,), daemon=True).start()
 
     def _bgExtract(self, server):
         try:
@@ -2432,11 +2503,12 @@ class ArabicPlayerDetail(Screen):
                 self["status"].setText("جاري فتح المشغل...")
                 self.session.openWithCallback(
                     _on_resume, MessageBox,
-                    "استئناف من {}:{:02d}؟".format(_mins_r, _secs_r),
+                    "Resume from {}:{:02d}?".format(_mins_r, _secs_r),
                     MessageBox.TYPE_YESNO, timeout=8, default=True)
             else:
-                self["status"].setText("جاري فتح المشغل...")
+                self["status"].setText("Opening player...")
                 _play(self.session, url, title, resume_pos=0, item_url=_item_url)
+            self["overlay_bg"].hide()
             self["status"].hide()
 
         except Exception as e:
@@ -2550,19 +2622,119 @@ def _restore_previous_service(session, previous_service):
     except Exception as e:
         my_log("Restore previous service failed: {}".format(e))
 
+# ─── Quality Picker Dialog ──────────────────────────────────────────────────
+class ArabicPlayerQualityPicker(Screen):
+    skin = """
+    <screen name="ArabicPlayerQualityPicker" position="center,center"
+            size="960,570" flags="wfNoBorder">
+        <widget name="bg"       position="0,0"    size="960,570"  backgroundColor="#0D1117" zPosition="1"/>
+        <widget name="top_bar"  position="0,0"    size="960,60"   backgroundColor="#161B22" zPosition="2"/>
+        <widget name="top_line" position="0,60"   size="960,3"    backgroundColor="#00E5FF" zPosition="3"/>
+        <widget name="title"    position="20,10"  size="920,42"   font="Regular;32"
+                foregroundColor="#00E5FF" transparent="1" zPosition="4"/>
+        <widget name="subtitle" position="20,72"  size="920,34"   font="Regular;24"
+                foregroundColor="#8B949E" transparent="1" zPosition="4"/>
+        <widget name="menu"     position="20,120" size="920,375"  zPosition="4"
+                scrollbarMode="showOnDemand"
+                foregroundColor="#F0F6FC" foregroundColorSelected="#0D1117"
+                backgroundColor="#0D1117" backgroundColorSelected="#00E5FF"
+                font="Regular;33" itemHeight="60"/>
+        <widget name="bot_line" position="0,504"  size="960,3"    backgroundColor="#00E5FF" zPosition="3"/>
+        <widget name="hint"     position="0,510"  size="960,54"   backgroundColor="#161B22" zPosition="2"/>
+        <widget name="hint_txt" position="20,522" size="920,30"   font="Regular;22"
+                foregroundColor="#484F58" transparent="1" zPosition="4" halign="center"/>
+    </screen>
+    """
+
+    _QUALITY_COLORS = {
+        "1080": ("#FFD740", u"★ 4K/FHD"),
+        "720":  ("#39D98A", u"★ HD"),
+        "480":  ("#58A6FF", u"● SD"),
+        "360":  ("#8B949E", u"● Low"),
+    }
+
+    def __init__(self, session, movie_title, servers, on_select):
+        Screen.__init__(self, session)
+        self._servers   = servers
+        self._on_select = on_select
+        self["bg"]       = Label("")
+        self["top_bar"]  = Label("")
+        self["top_line"] = Label("")
+        self["bot_line"] = Label("")
+        self["hint"]     = Label("")
+        self["title"]    = Label(u"Select Quality")
+        self["subtitle"] = Label(_single_line_text(movie_title, width=60))
+        self["hint_txt"] = Label(
+            u"OK = Play   ▲▼ = Navigate   Back = Cancel")
+        self["menu"]     = MenuList([])
+        rows = []
+        for srv in servers:
+            name = srv.get("name", "Server")
+            badge = ""
+            for key, (_, lbl) in self._QUALITY_COLORS.items():
+                if key in name:
+                    badge = "  " + lbl
+                    break
+            rows.append(name + badge)
+        self["menu"].setList(rows)
+        self["actions"] = ActionMap(
+            ["OkCancelActions", "DirectionActions"],
+            {"ok": self._pick, "cancel": self.close,
+             "up": lambda: self["menu"].up(),
+             "down": lambda: self["menu"].down()},
+            -1
+        )
+
+    def _pick(self):
+        idx = self["menu"].getSelectedIndex()
+        if 0 <= idx < len(self._servers):
+            srv = self._servers[idx]
+            self.close()
+            self._on_select(srv)
+        else:
+            self.close()
+
+
 # ─── Simple Player Fallback ─────────────────────────────────────────────────
 class ArabicPlayerSimplePlayer(Screen):
     skin = """
-    <screen name="ArabicPlayerSimplePlayer" position="0,870" size="1920,210" flags="wfNoBorder" backgroundColor="#000000">
-        <widget name="overlay_bg" position="0,0" size="1920,210" backgroundColor="#0D1117" zPosition="1" />
-        <widget name="status" position="60,75" size="1800,54" font="Regular;39" foregroundColor="#00E5FF" backgroundColor="#000000" transparent="1" halign="center" zPosition="3" />
+    <screen name="ArabicPlayerSimplePlayer" position="0,0" size="1920,1080" flags="wfNoBorder" backgroundColor="transparent">
+        <!-- === ArabicPlayer OSD Bar (y=870 to y=1080, total 210px) === -->
+        <!-- Background -->
+        <widget name="overlay_bg"  position="0,870"    size="1920,210" backgroundColor="#0D1117" zPosition="10" />
+        <!-- Row 1: Title bar (870-924, h=54) -->
+        <widget name="osd_titlebar" position="0,870"   size="1920,54" backgroundColor="#161B22" zPosition="11" />
+        <widget name="osd_title"    position="20,878"  size="1480,40" font="Regular;34" foregroundColor="#00E5FF" transparent="1" zPosition="12" />
+        <widget name="osd_durtext"  position="1520,878" size="380,40" font="Regular;30" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
+        <!-- Row 2: Progress bar (924-954, h=30) -->
+        <widget name="prog_bg"      position="0,924"   size="1920,30" backgroundColor="#21262D" zPosition="11" />
+        <widget name="prog_fill"    position="0,924"   size="2,30" backgroundColor="#00E5FF" zPosition="12" />
+        <widget name="prog_pct"     position="0,924"   size="1920,30" font="Regular;20" foregroundColor="#F0F6FC" transparent="1" zPosition="13" halign="center" />
+        <!-- Row 3: Elapsed | Status | Hints (954-1020, h=66) -->
+        <widget name="osd_elapsed"  position="20,960"  size="320,48" font="Regular;38" foregroundColor="#FFD740" transparent="1" zPosition="12" />
+        <widget name="status"       position="660,960" size="600,48" font="Regular;38" foregroundColor="#39D98A" transparent="1" zPosition="12" halign="center" />
+        <widget name="osd_hints"    position="1320,960" size="580,48" font="Regular;30" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
+        <!-- Row 4: Key hints bar (1020-1080, h=60) -->
+        <widget name="osd_keybar"   position="0,1020"  size="1920,60" backgroundColor="#161B22" zPosition="11" />
+        <widget name="osd_keys"     position="20,1032" size="1880,40" font="Regular;28" foregroundColor="#484F58" transparent="1" zPosition="12" halign="center" />
     </screen>
     """
 
     def __init__(self, session, title, candidates, previous_service=None, resume_pos=0, item_url=""):
         Screen.__init__(self, session)
-        self["overlay_bg"] = Label("")
-        self["status"] = Label("جاري التشغيل...")
+        self["overlay_bg"]   = Label("")
+        self["status"]       = Label("جاري التشغيل...")
+        # OSD widgets required by v7 skin
+        self["osd_titlebar"] = Label("")
+        self["osd_title"]    = Label("")
+        self["osd_durtext"]  = Label("")
+        self["prog_bg"]      = Label("")
+        self["prog_fill"]    = Label("")
+        self["prog_pct"]     = Label("")
+        self["osd_elapsed"]  = Label("")
+        self["osd_hints"]    = Label("")
+        self["osd_keybar"]   = Label("")
+        self["osd_keys"]     = Label("")
         self.title = title
         self.candidates = candidates or []
         self.previous_service = _copy_service_ref(previous_service)
@@ -2578,7 +2750,50 @@ class ArabicPlayerSimplePlayer(Screen):
         self._item_url  = item_url or ""
         self._seek_timer = eTimer()
         self._seek_timer.callback.append(self.__doSeek)
-        self["actions"] = ActionMap(["OkCancelActions"], {"cancel": self.close, "ok": self.close}, -1)
+        self._hide_timer = eTimer()
+        self._hide_timer.callback.append(self.__hideOSD)
+        self._osd_update_timer = eTimer()
+        self._osd_update_timer.callback.append(self.__updateOSD)
+        self._osd_visible = False
+        self._total_secs  = 0
+        self._osd_update_timer = eTimer()
+        self._osd_update_timer.callback.append(self.__updateOSD)
+        self._osd_visible = False
+        self._total_secs  = 0
+        self._osd_update_timer = eTimer()
+        self._osd_update_timer.callback.append(self.__updateOSD)
+        self._osd_visible = False
+        self._total_secs  = 0
+        self._osd_update_timer = eTimer()
+        self._osd_update_timer.callback.append(self.__updateOSD)
+        self._osd_visible = False
+        self._total_secs  = 0
+        # new OSD widget references
+        self["osd_titlebar"] = Label("")
+        self["osd_title"]    = Label("")
+        self["osd_durtext"]  = Label("")
+        self["prog_bg"]      = Label("")
+        self["prog_fill"]    = Label("")
+        self["prog_pct"]     = Label("")
+        self["osd_elapsed"]  = Label("")
+        self["osd_hints"]    = Label("")
+        self["osd_keybar"]   = Label("")
+        self["osd_keys"]     = Label("")
+        self._paused = False
+        self["actions"] = ActionMap(
+            ["OkCancelActions", "MediaPlayerActions", "InfobarSeekActions", "DirectionActions"],
+            {
+                "cancel":           self.__onExit,
+                "stop":             self.__onExit,
+                "ok":               self.__togglePause,
+                "playpauseService": self.__togglePause,
+                "right":            lambda: self.__seek(+10),
+                "left":             lambda: self.__seek(-10),
+                "seekFwd":          lambda: self.__seek(+60),
+                "seekBack":         lambda: self.__seek(-60),
+            },
+            -1
+        )
         self._retry_timer = eTimer()
         self._retry_timer.callback.append(self.__onTimeout)
         eventmap = {
@@ -2589,9 +2804,223 @@ class ArabicPlayerSimplePlayer(Screen):
         if ev_video is not None:
             eventmap[ev_video] = self.__onConfirmed
         self._events = ServiceEventTracker(screen=self, eventmap=eventmap)
+        self.onLayoutFinish.append(self.__initOSD)
+        self.onLayoutFinish.append(self.__initOSD)
+        self.onLayoutFinish.append(self.__initOSD)
+        self.onLayoutFinish.append(self.__initOSD)
         self.onLayoutFinish.append(self.__playNext)
         self.onClose.append(self.__stop)
 
+    # ── OSD helpers ──────────────────────────────────────────────
+    _OSD_WIDGETS = [
+        "overlay_bg","osd_titlebar","osd_title","osd_durtext",
+        "prog_bg","prog_fill","prog_pct","osd_elapsed",
+        "status","osd_hints","osd_keybar","osd_keys",
+    ]
+
+    def __initOSD(self):
+        for _w in self._OSD_WIDGETS:
+            try: self[_w].hide()
+            except Exception: pass
+
+    def __hideOSD(self):
+        self._osd_visible = False
+        try: self._osd_update_timer.stop()
+        except Exception: pass
+        for _w in self._OSD_WIDGETS:
+            try: self[_w].hide()
+            except Exception: pass
+
+    def __showOSD(self):
+        self._osd_visible = True
+        for _w in self._OSD_WIDGETS:
+            try: self[_w].show()
+            except Exception: pass
+        self.__updateOSD()
+        try: self._osd_update_timer.start(1000, False)
+        except Exception: pass
+
+    def __updateOSD(self):
+        if not getattr(self, "_osd_visible", False):
+            return
+        try:
+            wall = _GLOBAL_PLAY_START_WALL
+            base = _GLOBAL_PLAY_START_POS
+            elapsed = max(0, int((time.time() - wall) + base)) if wall else 0
+            he = elapsed // 3600; me = (elapsed % 3600) // 60; se = elapsed % 60
+            self["osd_elapsed"].setText("{:02d}:{:02d}:{:02d}".format(he, me, se))
+            total = getattr(self, "_total_secs", 0)
+            if not total:
+                try:
+                    svc  = self.session.nav.getCurrentService()
+                    seek = svc and svc.seek()
+                    if seek:
+                        r = seek.getLength()
+                        if r and r[0] == 0 and r[1] > 0:
+                            total = r[1] // 90000
+                            self._total_secs = total
+                except Exception: pass
+            if total > 0:
+                rem = max(0, total - elapsed)
+                pct = min(1.0, float(elapsed) / float(total))
+                hr=rem//3600; mr=(rem%3600)//60; sr=rem%60
+                ht=total//3600; mt=(total%3600)//60; st=total%60
+                self["osd_durtext"].setText(
+                    "-{:02d}:{:02d}:{:02d}  {:02d}:{:02d}:{:02d}".format(hr,mr,sr,ht,mt,st))
+                self["prog_pct"].setText("{:.1f}%".format(pct*100))
+                fw = max(2, int(1920 * pct))
+            else:
+                self["osd_durtext"].setText("")
+                self["prog_pct"].setText("")
+                fw = 2
+            try:
+                from enigma import eSize
+                self["prog_fill"].instance.setSize(eSize(fw, 20))
+            except Exception: pass
+        except Exception as e:
+            my_log("updateOSD error: {}".format(e))
+
+    # ── playback ─────────────────────────────────────────────────
+    # ── OSD helpers ──────────────────────────────────────────────
+    _OSD_WIDGETS = [
+        "overlay_bg","osd_titlebar","osd_title","osd_durtext",
+        "prog_bg","prog_fill","prog_pct","osd_elapsed",
+        "status","osd_hints","osd_keybar","osd_keys",
+    ]
+
+    def __initOSD(self):
+        for _w in self._OSD_WIDGETS:
+            try: self[_w].hide()
+            except Exception: pass
+
+    def __hideOSD(self):
+        self._osd_visible = False
+        try: self._osd_update_timer.stop()
+        except Exception: pass
+        for _w in self._OSD_WIDGETS:
+            try: self[_w].hide()
+            except Exception: pass
+
+    def __showOSD(self):
+        self._osd_visible = True
+        for _w in self._OSD_WIDGETS:
+            try: self[_w].show()
+            except Exception: pass
+        self.__updateOSD()
+        try: self._osd_update_timer.start(1000, False)
+        except Exception: pass
+
+    def __updateOSD(self):
+        if not getattr(self, "_osd_visible", False):
+            return
+        try:
+            wall = _GLOBAL_PLAY_START_WALL
+            base = _GLOBAL_PLAY_START_POS
+            elapsed = max(0, int((time.time() - wall) + base)) if wall else 0
+            he = elapsed // 3600; me = (elapsed % 3600) // 60; se = elapsed % 60
+            self["osd_elapsed"].setText("{:02d}:{:02d}:{:02d}".format(he, me, se))
+            total = getattr(self, "_total_secs", 0)
+            if not total:
+                try:
+                    svc  = self.session.nav.getCurrentService()
+                    seek = svc and svc.seek()
+                    if seek:
+                        r = seek.getLength()
+                        if r and r[0] == 0 and r[1] > 0:
+                            total = r[1] // 90000
+                            self._total_secs = total
+                except Exception: pass
+            if total > 0:
+                rem = max(0, total - elapsed)
+                pct = min(1.0, float(elapsed) / float(total))
+                hr=rem//3600; mr=(rem%3600)//60; sr=rem%60
+                ht=total//3600; mt=(total%3600)//60; st=total%60
+                self["osd_durtext"].setText(
+                    "-{:02d}:{:02d}:{:02d}  {:02d}:{:02d}:{:02d}".format(hr,mr,sr,ht,mt,st))
+                self["prog_pct"].setText("{:.1f}%".format(pct*100))
+                fw = max(2, int(1920 * pct))
+            else:
+                self["osd_durtext"].setText("")
+                self["prog_pct"].setText("")
+                fw = 2
+            try:
+                from enigma import eSize
+                self["prog_fill"].instance.setSize(eSize(fw, 20))
+            except Exception: pass
+        except Exception as e:
+            my_log("updateOSD error: {}".format(e))
+
+    # ── playback ─────────────────────────────────────────────────
+    # ── OSD helpers ──────────────────────────────────────────────
+    _OSD_WIDGETS = [
+        "overlay_bg","osd_titlebar","osd_title","osd_durtext",
+        "prog_bg","prog_fill","prog_pct","osd_elapsed",
+        "status","osd_hints","osd_keybar","osd_keys",
+    ]
+
+    def __initOSD(self):
+        for _w in self._OSD_WIDGETS:
+            try: self[_w].hide()
+            except Exception: pass
+
+    def __hideOSD(self):
+        self._osd_visible = False
+        try: self._osd_update_timer.stop()
+        except Exception: pass
+        for _w in self._OSD_WIDGETS:
+            try: self[_w].hide()
+            except Exception: pass
+
+    def __showOSD(self):
+        self._osd_visible = True
+        for _w in self._OSD_WIDGETS:
+            try: self[_w].show()
+            except Exception: pass
+        self.__updateOSD()
+        try: self._osd_update_timer.start(1000, False)
+        except Exception: pass
+
+    def __updateOSD(self):
+        if not getattr(self, "_osd_visible", False):
+            return
+        try:
+            wall = _GLOBAL_PLAY_START_WALL
+            base = _GLOBAL_PLAY_START_POS
+            elapsed = max(0, int((time.time() - wall) + base)) if wall else 0
+            he = elapsed // 3600; me = (elapsed % 3600) // 60; se = elapsed % 60
+            self["osd_elapsed"].setText("{:02d}:{:02d}:{:02d}".format(he, me, se))
+            total = getattr(self, "_total_secs", 0)
+            if not total:
+                try:
+                    svc  = self.session.nav.getCurrentService()
+                    seek = svc and svc.seek()
+                    if seek:
+                        r = seek.getLength()
+                        if r and r[0] == 0 and r[1] > 0:
+                            total = r[1] // 90000
+                            self._total_secs = total
+                except Exception: pass
+            if total > 0:
+                rem = max(0, total - elapsed)
+                pct = min(1.0, float(elapsed) / float(total))
+                hr=rem//3600; mr=(rem%3600)//60; sr=rem%60
+                ht=total//3600; mt=(total%3600)//60; st=total%60
+                self["osd_durtext"].setText(
+                    "-{:02d}:{:02d}:{:02d}  {:02d}:{:02d}:{:02d}".format(hr,mr,sr,ht,mt,st))
+                self["prog_pct"].setText("{:.1f}%".format(pct*100))
+                fw = max(2, int(1920 * pct))
+            else:
+                self["osd_durtext"].setText("")
+                self["prog_pct"].setText("")
+                fw = 2
+            try:
+                from enigma import eSize
+                self["prog_fill"].instance.setSize(eSize(fw, 20))
+            except Exception: pass
+        except Exception as e:
+            my_log("updateOSD error: {}".format(e))
+
+    # ── playback ─────────────────────────────────────────────────
     def __playNext(self):
         global _PROXY_LAST_HIT, _PROXY_LAST_BYTES
         self._candidate_idx += 1
@@ -2632,24 +3061,104 @@ class ArabicPlayerSimplePlayer(Screen):
             self._retry_timer.stop()
         except Exception:
             pass
-        self["status"].setText(self.title)
         my_log("Play confirmed: {}".format(self._candidate_label))
         _start_pos_tracker(self.session, self._item_url, start_pos=self._resume_pos)
         if self._resume_pos > 30:
             self._seek_timer.start(2000, True)
+        self["status"].hide()
+
+    def __togglePause(self):
         try:
-            from Screens.InfoBar import MoviePlayer
-            self._handoff = True
-            callback = lambda *args: (_stop_pos_tracker(), self.__restorePrevious())
-            try:
-                self.session.openWithCallback(callback, MoviePlayer, self.sref, streamMode=True, askBeforeLeaving=False)
-            except TypeError:
-                self.session.openWithCallback(callback, MoviePlayer, self.sref)
-            self.close()
-            return
+            svc = self.session.nav.getCurrentService()
+            if not svc:
+                self.__showOSD(); self._hide_timer.start(2000, True); return
+            p = svc.pause()
+            if not p:
+                self.__showOSD(); self._hide_timer.start(2000, True); return
+            if self._paused:
+                p.unpause()
+                self._paused = False
+                self["status"].setText(u"▶ Playing")
+            else:
+                p.pause()
+                self._paused = True
+                self["status"].setText(u"⏸ Paused")
+            self.__showOSD()
+            self._hide_timer.start(2000, True)
         except Exception as e:
-            self._handoff = False
-            my_log("MoviePlayer handoff failed: {}".format(e))
+            my_log("togglePause error: {}".format(e))
+            self.__showOSD()
+            self._hide_timer.start(2000, True)
+
+    def __seek(self, delta_secs):
+        try:
+            svc = self.session.nav.getCurrentService()
+            if not svc: return
+            sk = svc.seek()
+            if not sk: return
+            # compute absolute target from current wall-clock estimate
+            global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
+            global _GLOBAL_LAST_SEEK_TARGET
+            _wall = _GLOBAL_PLAY_START_WALL
+            _base = _GLOBAL_PLAY_START_POS
+            if _wall:
+                elapsed = time.time() - _wall
+            else:
+                elapsed = 0
+            current_est = int(_base + elapsed)
+            target      = max(0, current_est + int(delta_secs))
+            # clamp to total duration if known
+            _tot = getattr(self, "_total_secs", 0)
+            if _tot > 0:
+                target = min(target, _tot - 3)
+            # use absolute seekTo -- reliable on HiSilicon
+            # seekRelative is unreliable for large jumps on this SoC
+            sk.seekTo(target * 90000)
+            _GLOBAL_LAST_SEEK_TARGET = target
+            # set base to target immediately; decoder takes ~2s to reach
+            # it so we subtract 2s allowance so display stays behind video
+            _GLOBAL_PLAY_START_POS  = max(0, target - 2)
+            _GLOBAL_PLAY_START_WALL = time.time()
+            self._total_secs = 0
+            _th = target // 3600; _tm = (target % 3600) // 60; _ts = target % 60
+            _arr = u"➡" if delta_secs > 0 else u"⬅"
+            self["status"].setText(u"{} {:02d}:{:02d}:{:02d}".format(_arr, _th, _tm, _ts))
+            self.__showOSD()
+            # auto-hide after 2.5s (gives time to see where we landed)
+            self._hide_timer.start(2500, True)
+        except Exception as e:
+            my_log("seek error: {}".format(e))
+
+    def __hideStatus(self):
+        self["osd_title"].setText(self.title)
+        self["osd_keys"].setText(
+            u"OK = Pause/Play   ⬅ -10s   +10s ➡   ⬅⬅ -60s   +60s ➡➡   Stop = Save & Exit")
+        self["status"].setText(u"▶ Playing")
+        self._total_secs = 0
+        self.__showOSD()
+        self._hide_timer.start(3000, True)
+
+    def __onExit(self):
+        """Stop/Back/OK: save accurate position then close."""
+        try:
+            if self._item_url and _GLOBAL_PLAY_START_WALL > 0:
+                elapsed = time.time() - _GLOBAL_PLAY_START_WALL
+                secs    = int(_GLOBAL_PLAY_START_POS + elapsed)
+                # sanity-check: position must be > 30s and
+                # not exceed total duration by more than 60s
+                _tot = getattr(self, "_total_secs", 0)
+                if _tot > 0:
+                    secs = min(secs, _tot - 5)
+                secs = max(0, secs)
+                if secs > 30:
+                    _save_position(self._item_url, secs)
+                    my_log("Exit save: {}s (wall-clock)".format(secs))
+                else:
+                    my_log("Exit save skipped: pos={}s".format(secs))
+        except Exception as e:
+            my_log("Exit save error: {}".format(e))
+        _stop_pos_tracker()
+        self.close()
 
     def __onFailed(self):
         if self._play_confirmed:
@@ -2681,13 +3190,25 @@ class ArabicPlayerSimplePlayer(Screen):
             seek = svc and svc.seek()
             if seek:
                 seek.seekTo(self._resume_pos * 90000)
-                my_log("Resume: seeked to {}s".format(self._resume_pos))
+                my_log("Resume seekTo: {}s".format(self._resume_pos))
+                global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
+                global _GLOBAL_LAST_SEEK_TARGET
+                _GLOBAL_LAST_SEEK_TARGET = self._resume_pos
+                # base = target - 2s decoder buffer
+                # wall starts from NOW so estimate increments from here
+                _GLOBAL_PLAY_START_POS  = max(0, self._resume_pos - 2)
+                _GLOBAL_PLAY_START_WALL = time.time()
+                # update OSD immediately to show correct position
+                self._total_secs = 0
+                if getattr(self, "_osd_visible", False):
+                    self.__updateOSD()
             else:
-                my_log("Seek skipped: no seek interface available")
+                my_log("doSeek: no seek interface")
         except Exception as e:
-            my_log("Seek failed: {}".format(e))
+            my_log("doSeek failed: {}".format(e))
 
     def __stop(self):
+        self.__hideOSD()
         if self._handoff:
             # MoviePlayer callback handles tracker + restore
             return
