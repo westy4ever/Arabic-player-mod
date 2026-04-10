@@ -45,7 +45,7 @@ from Components.Pixmap       import Pixmap
 from Components.MenuList     import MenuList
 from Components.ScrollLabel  import ScrollLabel
 from Components.Sources.StaticText import StaticText
-from enigma                  import eTimer, ePicLoad, eServiceReference, iPlayableService
+from enigma import eTimer, ePicLoad, eServiceReference, iPlayableService, eSize, ePoint
 from Tools.LoadPixmap        import LoadPixmap
 from Components.ServiceEventTracker import ServiceEventTracker
 
@@ -58,7 +58,7 @@ try:
 except ImportError:
      pass  # not used directly; safe to ignore on builds that split this module
 
-_PLUGIN_VERSION = "2.0.0"
+_PLUGIN_VERSION = "2.0.2"  # green button added
 _PLUGIN_NAME    = "ArabicPlayer"
 _PLUGIN_OWNER   = "أحمد إبراهيم"
 _DEFAULT_TMDB_API_KEY = "01fd9e035ea1458748e99eb7216b0259"
@@ -326,7 +326,6 @@ def _decorate_item_title(item, site=None):
     if action.startswith("site_"):
         return title
 
-    # Ensure no old emojis are prefixing the title in our metadata
     if item_type == "movie":
         prefix = "[فيلم]"
     elif item_type == "series":
@@ -1015,10 +1014,6 @@ class LocalProxyHandler(http.server.BaseHTTPRequestHandler):
     def _handle(self, method):
         try:
             global _PROXY_LAST_HIT, _PROXY_LAST_BYTES, _PROXY_LAST_URL
-            # Preferred format:
-            # /stream?url=<encoded_url>&referer=<encoded_url>&ua=<encoded_ua>
-            # Legacy format:
-            # /https://real-url?params|header=val&...
             raw = self.path[1:]
             parsed_req = urlparse(self.path)
             query = parse_qs(parsed_req.query or "")
@@ -1040,20 +1035,17 @@ class LocalProxyHandler(http.server.BaseHTTPRequestHandler):
                 else:
                     stream_url = raw.strip()
 
-            # Build request headers
             headers = {"User-Agent": SAFE_UA}
 
             if explicit_ua:
                 headers["User-Agent"] = explicit_ua
 
-            # Parse piped headers (e.g. User-Agent=...&Referer=...)
             if piped_headers:
                 for part in piped_headers.split("&"):
                     if "=" in part:
                         k, v = part.split("=", 1)
                         headers[k.strip()] = v.strip()
 
-            # Auto-set Referer from URL domain if not already set
             if explicit_referer:
                 headers["Referer"] = explicit_referer
             elif "Referer" not in headers:
@@ -1063,7 +1055,6 @@ class LocalProxyHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-            # Forward Range header for seeking support
             range_hdr = self.headers.get("Range") or self.headers.get("range")
             if range_hdr:
                 headers["Range"] = range_hdr
@@ -1100,14 +1091,12 @@ class LocalProxyHandler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-            # Forward critical decoder headers
             for key in ("content-type", "content-length",
                         "content-range", "accept-ranges",
                         "last-modified", "etag"):
                 if key in resp_hdrs:
                     self.send_header(key.title(), resp_hdrs[key])
 
-            # Always advertise byte-range support
             if "accept-ranges" not in resp_hdrs:
                 self.send_header("Accept-Ranges", "bytes")
 
@@ -1116,7 +1105,6 @@ class LocalProxyHandler(http.server.BaseHTTPRequestHandler):
             if method == "HEAD":
                 return
 
-            # Stream body
             try:
                 while True:
                     chunk = resp.read(65536)
@@ -1126,7 +1114,7 @@ class LocalProxyHandler(http.server.BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
                     self.wfile.flush()
             except Exception:
-                pass  # Client disconnected or decoder stopped reading
+                pass
 
         except Exception as e:
             my_log("Proxy FATAL: {}".format(e))
@@ -1183,13 +1171,13 @@ class ArabicPlayerHome(Screen):
         self.skin = ArabicPlayerHome.skin.format(PLUGIN_PATH)
         Screen.__init__(self, session)
         self.session = session
-        self._items  = []  # list of dicts from extractor
+        self._items  = []
         self._page   = 1
-        self._source = "home"  # home / categories / search
-        self._site   = "egydead" # egydead / akoam / arabseed / wecima
+        self._source = "home"
+        self._site   = "egydead"
         self._m_type = "movie"
         self._last_query = ""
-        self._nav_stack = []  # Navigation stack for proper back behavior
+        self._nav_stack = []
         self._debounce_timer = eTimer()
         self._debounce_timer.callback.append(self._debounced_load_poster)
         self._pending_poster_url = None
@@ -1254,7 +1242,7 @@ class ArabicPlayerHome(Screen):
     def _showHome(self):
         self._source = "home"
         self._page   = 1
-        self._nav_stack = []  # Clear stack when going home
+        self._nav_stack = []
         self._setHeader(
             "ArabicPlayer  v{}".format(_PLUGIN_VERSION),
             "المشغل العربي الاحترافي",
@@ -1280,15 +1268,12 @@ class ArabicPlayerHome(Screen):
         self["footer"].setText("TMDb  |  {} مفضلة  |  {} سجل".format(len(_favorite_items()), len(_history_items())))
         self._refreshPreview()
 
-    # removed duplicate _refreshPreview (the correct version is below at _setList)
-    # ── Navigation ────────────────────────────────────────────────────────────
     def _onOk(self):
         idx = self["menu"].getSelectedIndex()
         if idx < 0 or idx >= len(self._items):
             return
         item = self._items[idx]
 
-        # Home menu actions (System actions)
         if "_action" in item:
             a = item["_action"]
             if a.startswith("site_"):
@@ -1310,20 +1295,14 @@ class ArabicPlayerHome(Screen):
             elif a == "settings":
                 self._openSettings()
                 return
-            # If _action is "category" or something else, let it fall through to curr_type check
 
-        # Category selection
-        # Support both 'type' and legacy '_action'
         curr_type = item.get("type", item.get("_action"))
-        my_log("_onOk: type={}, url={}".format(curr_type, item.get("url")))
-        
         if curr_type == "category":
             if item.get("_m_type") in ("movie", "series"):
                 self._m_type = item.get("_m_type")
             self._loadCategory(item["url"], item["title"])
             return
 
-        # Open movie / series / episode
         if curr_type in ("movie", "series", "episode", "details"):
             self._openItem(item)
 
@@ -1405,7 +1384,6 @@ class ArabicPlayerHome(Screen):
         title = item.get("title", "")
         site = item.get("_site", self._site)
 
-        # Skip separators
         if action == "separator":
             self["preview_title"].setText("")
             self["preview_meta"].setText("")
@@ -1435,22 +1413,16 @@ class ArabicPlayerHome(Screen):
         self["preview_meta"].setText(_wrap_ui_text("  |  ".join(meta), width=36, max_lines=2))
         self["preview_info"].setText(_wrap_ui_text("  ".join(info_parts), width=36, max_lines=2) if info_parts else "")
 
-        # Show poster with debounce (300ms delay to avoid loading during fast scrolling)
         poster_url = item.get("poster") or item.get("image") or ""
-        # Do NOT call _get_tmdb_poster here — it makes a live HTTP request
-        # on the main Enigma2 thread and will freeze the UI on every scroll.
-        # Poster enrichment happens later in ArabicPlayerDetail._bgLoad.
 
         with self._poster_lock:
             self._requested_poster_url = poster_url
 
         if poster_url:
-            # Check cache first — instant display
             cached = _get_cached_poster(poster_url)
             if cached:
                 self._display_poster_from_file(cached)
             else:
-                # Debounce: wait 300ms before downloading
                 self._pending_poster_url = poster_url
                 try:
                     self._debounce_timer.stop()
@@ -1479,7 +1451,6 @@ class ArabicPlayerHome(Screen):
 
         try:
             if url.startswith("//"): url = "https:" + url
-            # Basic URL normalization
             try:
                 from urllib.parse import urlparse, quote, urlunparse
                 p = list(urlparse(url))
@@ -1488,7 +1459,6 @@ class ArabicPlayerHome(Screen):
                 url = urlunparse(p)
             except Exception: pass
 
-            # Check cache first
             cached = _get_cached_poster(url)
             if cached:
                 with self._poster_lock:
@@ -1496,7 +1466,6 @@ class ArabicPlayerHome(Screen):
                 callInMainThread(self._display_poster_from_file, cached)
                 return
 
-            # Download and cache
             cache_path = _poster_cache_path(url)
             req = urllib2.Request(url, headers={"User-Agent": SAFE_UA})
             data = urllib2.urlopen(req, timeout=7).read()
@@ -1562,7 +1531,6 @@ class ArabicPlayerHome(Screen):
         )
 
     def _showCategories(self, m_type):
-        # Specific for EgyDead style
         self._push_nav_state()
         extractor = _get_extractor("egydead")
         get_categories = getattr(extractor, "get_categories", None)
@@ -2064,13 +2032,13 @@ class ArabicPlayerDetail(Screen):
     </screen>
     """.format(PLUGIN_PATH)
 
-    def __init__(self, session, item, site="egydead", m_type="movie"): # Added m_type
+    def __init__(self, session, item, site="egydead", m_type="movie"):
         Screen.__init__(self, session)
         self.session = session
         self._item   = item
         self._site   = site
-        self._m_type = m_type # Store m_type
-        self._data   = None   # page data from extractor
+        self._m_type = m_type
+        self._data   = None
         self._servers = []
         self._episodes = []
         self._tmp_posters = []
@@ -2114,9 +2082,10 @@ class ArabicPlayerDetail(Screen):
         )
 
         self.onLayoutFinish.append(self._load)
+        self.onExecBegin.append(self._refreshPoster)
 
     def _load(self):
-        threading.Thread(target=self._bgLoad, args=(self._site, self._item["url"], self._m_type), daemon=True).start() # Pass site, url, m_type
+        threading.Thread(target=self._bgLoad, args=(self._site, self._item["url"], self._m_type), daemon=True).start()
 
     def _bgLoad(self, site, url, m_type):
         _done = [False]
@@ -2229,19 +2198,15 @@ class ArabicPlayerDetail(Screen):
             plot_label = "{}: {}".format(plot_label, current_title[:32])
         self["plot_title"].setText(_single_line_text(plot_label, width=46, fallback="القصة"))
         plot_text, plot_source = _pick_plot_text_with_source(data, self._item)
-        # Remove provider prefix from plot text
         plot_text = re.sub(r"^\[.*?\]\s*|^المصدر:\s*.*?\|\s*", "", plot_text)
-        # H: second pass -- strip site names that survived start/end cleaning
         _MID_SITES = (
             "EgyDead", "Wecima", "Akoam", "ArabSeed",
             "TopCinema", "TopCinemaa", "FaselHD", "Shaheed", "Shaheed4u",
         )
         for _ms in _MID_SITES:
-            # remove "| SiteName" or "- SiteName" or "SiteName" surrounded by spaces
             plot_text = re.sub(
                 r"\s*[|\-]\s*" + re.escape(_ms) + r"[^\u0600-\u06ff\n]{0,25}",
                 " ", plot_text, flags=re.I)
-            # remove "على موقع SiteName" type phrases
             plot_text = re.sub(
                 r"\u0639\u0644\u0649\s+\u0645\u0648\u0642\u0639\s+" + re.escape(_ms)
                 + r"[^\u0600-\u06ff\n]{0,30}",
@@ -2251,19 +2216,16 @@ class ArabicPlayerDetail(Screen):
         _pt = (plot_text or "").strip()
         if len(_pt) > 500:
             _pt = _pt[:500].rsplit(" ", 1)[0] + "…"
-        # G: force RTL paragraph direction for Arabic-dominant text
         _ar_count = sum(1 for _c in _pt[:80] if "؀" <= _c <= "ۿ")
         if _ar_count > int(len(_pt[:80]) * 0.3):
             _pt = "‏" + _pt
         self["plot"].setText(_pt)
 
-        # Build menu
         self._servers = _sort_servers([s for s in data.get("servers", []) if s.get("url")])
         self._episodes = [e for e in data.get("items", []) if e.get("type") == "episode"]
         
         my_log("Detail _onLoaded: servers={}, items={}".format(len(self._servers), len(self._episodes)))
 
-        # Detect if this is a series by checking data type, item type, OR presence of episodes
         is_series = (
             data.get("type") in ("series", "show")
             or self._item.get("type") in ("series", "show")
@@ -2289,7 +2251,6 @@ class ArabicPlayerDetail(Screen):
                 self["menu"].setList(["لا توجد سيرفرات متاحة"])
                 self["status"].setText("لا توجد سيرفرات")
 
-        # Load poster
         poster_url = data.get("poster") or self._item.get("poster", "")
         if poster_url:
             threading.Thread(
@@ -2300,24 +2261,33 @@ class ArabicPlayerDetail(Screen):
         fav_state = "محفوظ" if _is_favorite(self._item.get("url")) else "غير محفوظ"
         tmdb_state = "TMDb مفعل" if _tmdb_enabled() else "TMDb غير مفعل"
         return "{}  |  {}  |  {}".format(prefix, fav_state, tmdb_state)
+    
+    def _refreshPoster(self):
+        """Reload poster when screen is shown again (after returning from player)."""
+        poster_url = None
+        if self._data and self._data.get("poster"):
+            poster_url = self._data["poster"]
+        elif self._item.get("poster"):
+            poster_url = self._item["poster"]
+        if poster_url:
+            self._downloadPoster(poster_url)
+        else:
+            callInMainThread(self["poster"].hide)
 
     def _downloadPoster(self, url):
         try:
             if not url: return
             if url.startswith("//"): url = "https:" + url
             
-            # --- Unicode Fix (Arabic Path Encoding) ---
             import urllib.request as urllib2
             try:
                 from urllib.parse import urlparse, quote, urlunparse
-                # Ensure the URL is a string (Py3) and encode it correctly for Request
                 p = list(urlparse(url))
-                p[2] = quote(p[2]) # encode path
-                p[4] = quote(p[4]) # encode query string
+                p[2] = quote(p[2])
+                p[4] = quote(p[4])
                 url = urlunparse(p)
             except Exception: pass
             
-            # Use poster cache
             cached = _get_cached_poster(url)
             if cached:
                 callInMainThread(self.picLoad.setPara, (self["poster"].instance.size().width(), self["poster"].instance.size().height(), 1, 1, 0, 1, "#000000"))
@@ -2340,23 +2310,25 @@ class ArabicPlayerDetail(Screen):
 
     def _onOk(self):
         idx = self["menu"].getSelectedIndex()
-        if idx < 0: return
+        if idx < 0:
+            return
         
-        # If it's a series, open nested detail for episode
-        _is_series = bool(
+        is_series = bool(
             self._data and (
                 self._data.get("type") in ("series", "show")
                 or self._item.get("type") in ("series", "show")
                 or self._episodes
             )
         )
-        if _is_series:
-            if idx >= len(self._episodes): return
-            item = self._episodes[idx]
-            self.session.open(ArabicPlayerDetail, item, self._site, "episode")
+        
+        if is_series:
+            if idx >= len(self._episodes):
+                return
+            ep = self._episodes[idx]
+            self.session.open(ArabicPlayerDetail, ep, self._site, "episode")
         else:
-            # movie / episode: extract and play selected server
-            if idx >= len(self._servers): return
+            if idx >= len(self._servers):
+                return
             server = self._servers[idx]
             self["status"].setText("Extracting stream...")
             self["status"].show()
@@ -2390,13 +2362,11 @@ class ArabicPlayerDetail(Screen):
             my_log("TMDb refresh failed: {}".format(e))
             callInMainThread(self["status"].setText, "فشل تحديث TMDb")
 
-
     def _bgExtract(self, server):
         try:
             from extractors.base import log
             log("Detail _bgExtract: START extracting for server={}".format(server.get("name", "Unknown")))
             
-            # Use site-specific extractor via factory
             extract_fn = None
             try:
                 extractor = _get_extractor(self._site)
@@ -2448,7 +2418,6 @@ class ArabicPlayerDetail(Screen):
                 main_url, old_params = raw_url, ""
 
             lower_main_url = main_url.lower()
-            # Only reject if it's clearly an embed/player page with no known media extension
             is_media_url = any(marker in lower_main_url for marker in (
                 ".m3u8", ".mp4", ".mkv", ".mp3", ".ts", ".avi",
                 "master.txt", "/hls", "/stream", "/playlist"
@@ -2460,10 +2429,8 @@ class ArabicPlayerDetail(Screen):
                 self["status"].setText("الرابط صفحة تشغيل وليس ملف فيديو — جرب سيرفر آخر")
                 return
             
-            # Using synced UA from base.py
             headers = {"User-Agent": SAFE_UA}
             
-            # Use the final referer from the extraction process
             if final_ref:
                 headers["Referer"] = final_ref
             
@@ -2475,28 +2442,35 @@ class ArabicPlayerDetail(Screen):
             
             header_str = "&".join(["{}={}".format(k, v) for k, v in headers.items()])
             pure_url = main_url.split("|")[0].strip()
-            # Enigma2 uses # mapping for HTTP headers, not |
             url = pure_url + "#" + header_str if header_str else pure_url
             
-            _item_url   = self._item.get("url", "")
-            _saved_pos  = _get_saved_position(_item_url)
+            _item_url = self._item.get("url", "")
+            _saved_pos = _get_saved_position(_item_url)
             if _saved_pos > 30:
-                _mins_r = _saved_pos // 60
-                _secs_r = _saved_pos % 60
+                # Format resume time with hours if needed
+                if _saved_pos >= 3600:
+                    _hours_r = _saved_pos // 3600
+                    _mins_r = (_saved_pos % 3600) // 60
+                    _secs_r = _saved_pos % 60
+                    resume_text = "Resume from {:02d}:{:02d}:{:02d}?".format(_hours_r, _mins_r, _secs_r)
+                else:
+                    _mins_r = _saved_pos // 60
+                    _secs_r = _saved_pos % 60
+                    resume_text = "Resume from {}:{:02d}?".format(_mins_r, _secs_r)
+                
                 def _on_resume(_ans, _u=url, _t=title, _iu=_item_url, _sp=_saved_pos):
                     if not _ans:
-                        # user chose 'from start' -- wipe stale resume point
                         _save_position(_iu, 0)
                     _play(self.session, _u, _t, resume_pos=_sp if _ans else 0, item_url=_iu)
                 self["status"].setText("جاري فتح المشغل...")
                 self.session.openWithCallback(
                     _on_resume, MessageBox,
-                    "Resume from {}:{:02d}?".format(_mins_r, _secs_r),
+                    resume_text,
                     MessageBox.TYPE_YESNO, timeout=8, default=True)
             else:
                 self["status"].setText("Opening player...")
                 _play(self.session, url, title, resume_pos=0, item_url=_item_url)
-            self["overlay_bg"].hide()
+            self["poster"].hide()
             self["status"].hide()
 
         except Exception as e:
@@ -2525,7 +2499,6 @@ def _build_remote_play_candidates(url):
         seen.add(key)
         candidates.append((p_type, svc_url, label, uses_proxy))
 
-    # Try the most common Enigma2 backends in a practical order.
     if plain_url.startswith("https://") or plain_url.startswith("http://"):
         proxy_params = {"url": plain_url}
         if headers.get("Referer"):
@@ -2540,11 +2513,9 @@ def _build_remote_play_candidates(url):
         proxied = ""
         legacy_proxied = ""
 
-    # Detect if this is an HLS stream
     is_hls = any(x in plain_url.lower() for x in (".m3u8", "master.txt", "/hls", "/playlist"))
 
     if is_hls:
-        # HLS streams: prioritize 4097 (native HLS on Enigma2 HiSilicon/others)
         add_candidate(4097, plain_url, "4097 مباشر HLS")
         if proxied:
             add_candidate(4097, proxied, "4097 + proxy HLS", True)
@@ -2553,7 +2524,6 @@ def _build_remote_play_candidates(url):
         if proxied:
             add_candidate(8193, proxied, "8193 + proxy", True)
     else:
-        # MP4/direct streams: try 5001 first
         if proxied:
             add_candidate(5001, proxied, "5001 + proxy", True)
         add_candidate(5001, plain_url, "5001 مباشر")
@@ -2611,44 +2581,28 @@ def _restore_previous_service(session, previous_service):
         my_log("Restore previous service failed: {}".format(e))
 
 
-# ─── Simple Player Fallback ─────────────────────────────────────────────────
+# ─── Simple Player Fallback (CANVAS-BASED PROGRESS BAR, FULLY WORKING) ───────
 class ArabicPlayerSimplePlayer(Screen):
     skin = """
     <screen name="ArabicPlayerSimplePlayer" position="0,0" size="1920,1080" flags="wfNoBorder" backgroundColor="transparent">
 
-        <!-- ── Shadow layer (slightly larger, softer) ── -->
         <widget name="osd_shadow"   position="148,856" size="1624,230" backgroundColor="#000000" zPosition="9" />
-
-        <!-- ── Main OSD card (1600×210, centered, 160px margins) ── -->
         <widget name="overlay_bg"   position="160,860" size="1600,210" backgroundColor="#0A0E14" zPosition="10" />
-
-        <!-- ── Top accent line (cyan, full card width) ── -->
         <widget name="osd_topline"  position="160,860" size="1600,3" backgroundColor="#00E5FF" zPosition="11" />
-
-        <!-- ROW 1: Title + duration  (y=863, h=46) ── -->
         <widget name="osd_titlebar" position="160,860" size="1600,52" backgroundColor="#0D1520" zPosition="11" />
         <widget name="osd_title"    position="180,868" size="1180,38" font="Regular;30" foregroundColor="#00E5FF" transparent="1" zPosition="12" />
         <widget name="osd_durtext"  position="1380,868" size="360,38" font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
-
-        <!-- ROW 2: Progress bar track + fill + glow head (y=912, h=20) ── -->
         <widget name="prog_bg"      position="160,912" size="1600,20" backgroundColor="#1C2333" zPosition="11" />
-        <widget name="prog_fill"    position="160,912" size="2,20" backgroundColor="#00B4D8" zPosition="12" />
+        <widget name="prog_fill"    position="160,912" size="1600,20" zPosition="12" type="eCanvas" />
         <widget name="prog_head"    position="160,910" size="4,24" backgroundColor="#00E5FF" zPosition="13" />
         <widget name="prog_pct"     position="160,912" size="1600,20" font="Regular;16" foregroundColor="#FFFFFF" transparent="1" zPosition="14" halign="center" />
-
-        <!-- ROW 3: Elapsed | Status center | Seek hint (y=932, h=54) ── -->
         <widget name="osd_elapsed"  position="180,938" size="320,44" font="Regular;36" foregroundColor="#FFD740" transparent="1" zPosition="12" />
         <widget name="status"       position="640,938" size="640,44" font="Regular;36" foregroundColor="#39D98A" transparent="1" zPosition="12" halign="center" />
         <widget name="osd_hints"    position="1220,938" size="520,44" font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
-
-        <!-- ROW 4: Divider + key-hint bar (y=982, h=48) ── -->
         <widget name="osd_divider"  position="160,982" size="1600,2" backgroundColor="#1C2333" zPosition="11" />
         <widget name="osd_keybar"   position="160,984" size="1600,46" backgroundColor="#0D1520" zPosition="11" />
         <widget name="osd_keys"     position="180,992" size="1560,34" font="Regular;24" foregroundColor="#484F58" transparent="1" zPosition="12" halign="center" />
-
-        <!-- ── Bottom accent line ── -->
         <widget name="osd_botline"  position="160,1027" size="1600,3" backgroundColor="#0A2040" zPosition="11" />
-
     </screen>
     """
 
@@ -2656,22 +2610,20 @@ class ArabicPlayerSimplePlayer(Screen):
         Screen.__init__(self, session)
         self["overlay_bg"]   = Label("")
         self["status"]       = Label("جاري التشغيل...")
-        # OSD widgets required by v7 skin
+        # OSD widgets
         self["osd_shadow"]   = Label("")
         self["osd_titlebar"] = Label("")
         self["osd_title"]    = Label("")
         self["osd_durtext"]  = Label("")
-        self["osd_durtext2"] = Label("")
         self["osd_topline"]  = Label("")
         self["prog_bg"]      = Label("")
-        self["prog_fill"]    = Label("")
+        self["prog_fill"]    = Label("")        # skin will override to eCanvas
         self["prog_head"]    = Label("")
         self["prog_pct"]     = Label("")
         self["osd_elapsed"]  = Label("")
         self["osd_hints"]    = Label("")
         self["osd_divider"]  = Label("")
         self["osd_keybar"]   = Label("")
-        self["osd_keybar2"]  = Label("")
         self["osd_keys"]     = Label("")
         self["osd_botline"]  = Label("")
         self.title = title
@@ -2696,32 +2648,16 @@ class ArabicPlayerSimplePlayer(Screen):
         self._osd_visible = False
         self._total_secs  = 0
         self._osd_auto_hide_secs = 4
-        self._osd_update_timer = eTimer()
-        self._osd_update_timer.callback.append(self.__updateOSD)
-        self._osd_visible = False
-        self._total_secs  = 0
-        self._osd_update_timer = eTimer()
-        self._osd_update_timer.callback.append(self.__updateOSD)
-        self._osd_visible = False
-        self._total_secs  = 0
-        self._osd_update_timer = eTimer()
-        self._osd_update_timer.callback.append(self.__updateOSD)
-        self._osd_visible = False
-        self._total_secs  = 0
-        # new OSD widget references
-        self["osd_titlebar"] = Label("")
-        self["osd_title"]    = Label("")
-        self["osd_durtext"]  = Label("")
-        self["prog_bg"]      = Label("")
-        self["prog_fill"]    = Label("")
-        self["prog_pct"]     = Label("")
-        self["osd_elapsed"]  = Label("")
-        self["osd_hints"]    = Label("")
-        self["osd_keybar"]   = Label("")
-        self["osd_keys"]     = Label("")
         self._paused = False
+        self._paused_elapsed = 0
+        self._force_confirmation_timer = eTimer()
+        self._force_confirmation_timer.callback.append(self.__forceConfirm)
+        self._prog_canvas = None      # will be set in __initOSD
+        self._prog_width = 1600
+        self._prog_height = 20
+
         self["actions"] = ActionMap(
-            ["OkCancelActions", "MediaPlayerActions", "InfobarSeekActions", "DirectionActions"],
+            ["OkCancelActions", "MediaPlayerActions", "InfobarSeekActions", "DirectionActions", "ColorActions"],
             {
                 "cancel":           self.__onExit,
                 "stop":             self.__onExit,
@@ -2731,6 +2667,7 @@ class ArabicPlayerSimplePlayer(Screen):
                 "left":             lambda: self.__seek(-10),
                 "seekFwd":          lambda: self.__seek(+60),
                 "seekBack":         lambda: self.__seek(-60),
+                "green":            self.__onRestart,
             },
             -1
         )
@@ -2748,99 +2685,120 @@ class ArabicPlayerSimplePlayer(Screen):
         self.onLayoutFinish.append(self.__playNext)
         self.onClose.append(self.__stop)
 
-    # ── OSD helpers ──────────────────────────────────────────────
     _OSD_WIDGETS = [
         "osd_shadow","overlay_bg","osd_topline","osd_botline",
-        "osd_titlebar","osd_title","osd_durtext","osd_durtext2",
+        "osd_titlebar","osd_title","osd_durtext",
         "prog_bg","prog_fill","prog_head","prog_pct","osd_elapsed",
         "status","osd_hints","osd_divider",
-        "osd_keybar","osd_keybar2","osd_keys",
+        "osd_keybar","osd_keys",
     ]
 
     def __initOSD(self):
-        for _w in self._OSD_WIDGETS:
-            try: self[_w].hide()
-            except Exception: pass
+        # Hide all OSD widgets first
+        for w in self._OSD_WIDGETS:
+            try: self[w].hide()
+            except: pass
+        # Now set up the canvas for progress bar (skin has applied type="eCanvas")
+        try:
+            self._prog_canvas = self["prog_fill"].instance
+            self._prog_canvas.setBackgroundColor(0x1C2333FF)  # dark background
+            self._prog_canvas.show()
+        except Exception as e:
+            my_log("__initOSD canvas setup error: {}".format(e))
+        # Keep the progress bar canvas visible
+        try:
+            self["prog_fill"].show()
+        except: pass
 
     def __hideOSD(self):
         self._osd_visible = False
         try: self._osd_update_timer.stop()
-        except Exception: pass
-        for _w in self._OSD_WIDGETS:
-            try: self[_w].hide()
-            except Exception: pass
+        except: pass
+        for w in self._OSD_WIDGETS:
+            try: self[w].hide()
+            except: pass
 
     def __showOSD(self, auto_hide=True):
         self._osd_visible = True
-        for _w in self._OSD_WIDGETS:
-            try: self[_w].show()
-            except Exception: pass
+        for w in self._OSD_WIDGETS:
+            try: self[w].show()
+            except: pass
         self.__updateOSD()
-        try: self._osd_update_timer.start(1000, False)
-        except Exception: pass
+        try:
+            self._osd_update_timer.start(1000, False)
+        except: pass
         if auto_hide:
             try:
-                secs = getattr(self, "_osd_auto_hide_secs", 4)
                 self._hide_timer.stop()
-                self._hide_timer.start(secs * 1000, True)
-            except Exception: pass
+                self._hide_timer.start(self._osd_auto_hide_secs * 1000, True)
+            except: pass
 
     def __updateOSD(self):
-        if not getattr(self, "_osd_visible", False):
+        if not self._osd_visible:
             try: self._osd_update_timer.stop()
-            except Exception: pass
+            except: pass
             return
         try:
-            wall = _GLOBAL_PLAY_START_WALL
-            base = _GLOBAL_PLAY_START_POS
-            elapsed = max(0, int((time.time() - wall) + base)) if wall else 0
+            if self._paused:
+                elapsed = self._paused_elapsed
+            else:
+                wall = _GLOBAL_PLAY_START_WALL
+                base = _GLOBAL_PLAY_START_POS
+                if wall and base >= 0:
+                    elapsed = max(0, int((time.time() - wall) + base))
+                else:
+                    elapsed = 0
             he = elapsed // 3600; me = (elapsed % 3600) // 60; se = elapsed % 60
             self["osd_elapsed"].setText("{:02d}:{:02d}:{:02d}".format(he, me, se))
-            total = getattr(self, "_total_secs", 0)
+            total = self._total_secs
             if not total:
                 try:
-                    svc  = self.session.nav.getCurrentService()
+                    svc = self.session.nav.getCurrentService()
                     seek = svc and svc.seek()
                     if seek:
                         r = seek.getLength()
                         if r and r[0] == 0 and r[1] > 0:
                             total = r[1] // 90000
                             self._total_secs = total
-                except Exception: pass
+                except: pass
             if total > 0:
                 rem = max(0, total - elapsed)
                 pct = min(1.0, float(elapsed) / float(total))
-                hr=rem//3600; mr=(rem%3600)//60; sr=rem%60
-                ht=total//3600; mt=(total%3600)//60; st=total%60
-                self["osd_durtext"].setText(
-                    "-{:02d}:{:02d}:{:02d}  {:02d}:{:02d}:{:02d}".format(hr,mr,sr,ht,mt,st))
-                self["prog_pct"].setText("{:.1f}%".format(pct*100))
-                rem = max(0, total - elapsed)
-                pct = min(1.0, float(elapsed) / float(total))
-                hr=rem//3600; mr=(rem%3600)//60; sr=rem%60
-                ht=total//3600; mt=(total%3600)//60; st=total%60
-                self["osd_hints"].setText("-{:02d}:{:02d}:{:02d}".format(hr,mr,sr))
-                self["osd_durtext2"].setText("{:02d}:{:02d}:{:02d}".format(ht,mt,st))
-                self["osd_durtext"].setText("")
-                self["prog_pct"].setText("{:.1f} %".format(pct*100))
-                fw = max(2, int(1920 * pct))
+                hr = rem // 3600
+                mr = (rem % 3600) // 60
+                sr = rem % 60
+                ht = total // 3600
+                mt = (total % 3600) // 60
+                st = total % 60
+                self["osd_durtext"].setText("-{:02d}:{:02d}:{:02d}  {:02d}:{:02d}:{:02d}".format(hr, mr, sr, ht, mt, st))
+                self["prog_pct"].setText("{:.1f}%".format(pct * 100))
+
+                # --- Canvas drawing (if canvas is ready) ---
+                if self._prog_canvas:
+                    fw = max(2, int(self._prog_width * pct))
+                    from enigma import gRGB, gPainter
+                    # Clear canvas with background colour
+                    self._prog_canvas.fill(0x1C2333FF)
+                    # Draw filled rectangle in progress colour
+                    painter = gPainter(self._prog_canvas)
+                    painter.setBackgroundColor(gRGB(0x00, 0xB4, 0xD8))
+                    painter.fillRectangle(0, 0, fw, self._prog_height)
+                    painter.flush()
+                    self._prog_canvas.invalidate()
+                    # Move the glowing head
+                    self["prog_head"].instance.move(ePoint(160 + fw - 2, 910))
             else:
-                self["osd_hints"].setText("")
                 self["osd_durtext"].setText("")
-                self["osd_durtext2"].setText("")
                 self["prog_pct"].setText("")
-                fw = 2
-            try:
-                from enigma import eSize, ePoint
-                self["prog_fill"].instance.setSize(eSize(fw, 24))
-                self["prog_head"].instance.move(ePoint(max(0,fw-2), 929))
-            except Exception: pass
-            self["osd_keys"].setText("OK=Pause  << -10s  +10s >>  <<< -60s  +60s >>>")
-            self["osd_keybar2"].setText("Stop = Save & Exit")
+            self["osd_keys"].setText("OK=Pause  << -10s  +10s >>  <<< -60s  +60s >>>   Green=Restart   Stop=Save&Exit")
         except Exception as e:
             my_log("updateOSD error: {}".format(e))
 
-    # ── playback ─────────────────────────────────────────────────
+    def __forceConfirm(self):
+        if not self._play_confirmed:
+            my_log("Force confirm (unconditional)")
+            self.__onConfirmed()
+
     def __playNext(self):
         global _PROXY_LAST_HIT, _PROXY_LAST_BYTES
         self._candidate_idx += 1
@@ -2866,51 +2824,64 @@ class ArabicPlayerSimplePlayer(Screen):
         my_log("Play attempt: {}".format(label))
         try:
             self.session.nav.stopService()
-        except Exception:
-            pass
+        except: pass
         try:
             self.session.nav.playService(self.sref)
             self._retry_timer.start(12000, True)
+            self._force_confirmation_timer.start(3000, True)
         except Exception as e:
             my_log("SimplePlayer fallback error: {}".format(e))
             self.__playNext()
 
     def __onConfirmed(self):
+        if self._play_confirmed:
+            return
         self._play_confirmed = True
         try:
             self._retry_timer.stop()
-        except Exception:
-            pass
+            self._force_confirmation_timer.stop()
+        except: pass
         my_log("Play confirmed: {}".format(self._candidate_label))
         _start_pos_tracker(self.session, self._item_url, start_pos=self._resume_pos)
         if self._resume_pos > 30:
             self._seek_timer.start(2000, True)
-        # Show OSD briefly then auto-hide
         self["osd_title"].setText(self.title)
         self["status"].setText(u"▶ Playing")
         self._total_secs = 0
-        self.__showOSD()  # auto-hides after 4s
+        self.__showOSD(True)
+        if self._prog_canvas:
+            self._prog_canvas.show()
 
     def __togglePause(self):
         try:
             svc = self.session.nav.getCurrentService()
             if not svc:
-                self.__showOSD(); self._hide_timer.start(2000, True); return
+                self.__showOSD(True); return
             p = svc.pause()
             if not p:
-                self.__showOSD(); self._hide_timer.start(2000, True); return
+                self.__showOSD(True); return
             if self._paused:
                 p.unpause()
                 self._paused = False
+                global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
+                _GLOBAL_PLAY_START_POS = self._paused_elapsed
+                _GLOBAL_PLAY_START_WALL = time.time()
                 self["status"].setText(u"▶ Playing")
             else:
+                wall = _GLOBAL_PLAY_START_WALL
+                base = _GLOBAL_PLAY_START_POS
+                if wall:
+                    elapsed = int((time.time() - wall) + base)
+                else:
+                    elapsed = 0
+                self._paused_elapsed = max(0, elapsed)
                 p.pause()
                 self._paused = True
                 self["status"].setText(u"⏸ Paused")
-            self.__showOSD()  # auto-hides after 4s
+            self.__showOSD(True)
         except Exception as e:
             my_log("togglePause error: {}".format(e))
-            self.__showOSD()
+            self.__showOSD(True)
 
     def __seek(self, delta_secs):
         try:
@@ -2918,7 +2889,6 @@ class ArabicPlayerSimplePlayer(Screen):
             if not svc: return
             sk = svc.seek()
             if not sk: return
-            # compute absolute target from current wall-clock estimate
             global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
             global _GLOBAL_LAST_SEEK_TARGET
             _wall = _GLOBAL_PLAY_START_WALL
@@ -2928,67 +2898,82 @@ class ArabicPlayerSimplePlayer(Screen):
             else:
                 elapsed = 0
             current_est = int(_base + elapsed)
-            target      = max(0, current_est + int(delta_secs))
-            # clamp to total duration if known
-            _tot = getattr(self, "_total_secs", 0)
+            target = max(0, current_est + int(delta_secs))
+            _tot = self._total_secs
             if _tot > 0:
                 target = min(target, _tot - 3)
-            # use absolute seekTo -- reliable on HiSilicon
-            # seekRelative is unreliable for large jumps on this SoC
             sk.seekTo(target * 90000)
             _GLOBAL_LAST_SEEK_TARGET = target
-            # set base to target immediately; decoder takes ~2s to reach
-            # it so we subtract 2s allowance so display stays behind video
-            _GLOBAL_PLAY_START_POS  = max(0, target - 2)
+            _GLOBAL_PLAY_START_POS = max(0, target - 2)
             _GLOBAL_PLAY_START_WALL = time.time()
+            if self._paused:
+                self._paused_elapsed = target
             self._total_secs = 0
             _th = target // 3600; _tm = (target % 3600) // 60; _ts = target % 60
             _arr = u"➡" if delta_secs > 0 else u"⬅"
             self["status"].setText(u"{} {:02d}:{:02d}:{:02d}".format(_arr, _th, _tm, _ts))
-            self.__showOSD()
-            # auto-hide after 2.5s (gives time to see where we landed)
+            self.__showOSD(True)
             self._hide_timer.start(2500, True)
         except Exception as e:
             my_log("seek error: {}".format(e))
 
-    def __hideStatus(self):
-        self["osd_title"].setText(self.title)
-        self["osd_keys"].setText(
-            u"OK = Pause/Play   ⬅ -10s   +10s ➡   ⬅⬅ -60s   +60s ➡➡   Stop = Save & Exit")
-        self["status"].setText(u"▶ Playing")
-        self._total_secs = 0
-        self.__showOSD()
-        self._hide_timer.start(3000, True)
+    def __onRestart(self):
+        my_log("Restart requested by green button")
+        try:
+            self._seek_timer.stop()
+        except: pass
+        self._play_confirmed = False
+        try:
+            self.session.nav.stopService()
+        except: pass
+        self._candidate_idx = -1
+        self["status"].setText("Restarting stream...")
+        self.__showOSD(True)
+        restart_timer = eTimer()
+        restart_timer.callback.append(self.__playNext)
+        restart_timer.start(500, True)
 
     def __onExit(self):
-        """Stop/Back/OK: save accurate position then close."""
         try:
-            if self._item_url and _GLOBAL_PLAY_START_WALL > 0:
-                elapsed = time.time() - _GLOBAL_PLAY_START_WALL
-                secs    = int(_GLOBAL_PLAY_START_POS + elapsed)
-                # sanity-check: position must be > 30s and
-                # not exceed total duration by more than 60s
-                _tot = getattr(self, "_total_secs", 0)
+            if self._item_url:
+                if self._paused:
+                    secs = self._paused_elapsed
+                else:
+                    wall = _GLOBAL_PLAY_START_WALL
+                    base = _GLOBAL_PLAY_START_POS
+                    if wall:
+                        secs = int((time.time() - wall) + base)
+                    else:
+                        secs = 0
+                _tot = self._total_secs
                 if _tot > 0:
                     secs = min(secs, _tot - 5)
                 secs = max(0, secs)
                 if secs > 30:
                     _save_position(self._item_url, secs)
-                    my_log("Exit save: {}s (wall-clock)".format(secs))
-                else:
-                    my_log("Exit save skipped: pos={}s".format(secs))
+                    my_log("Exit save: {}s".format(secs))
         except Exception as e:
             my_log("Exit save error: {}".format(e))
+        try:
+            self.session.nav.stopService()
+        except: pass
         _stop_pos_tracker()
+        _restore_previous_service(self.session, self.previous_service)
         self.close()
+
+    def __stop(self):
+        self.__hideOSD()
+        for t in ("_seek_timer","_retry_timer","_hide_timer","_osd_update_timer","_force_confirmation_timer"):
+            try: getattr(self, t).stop()
+            except: pass
 
     def __onFailed(self):
         if self._play_confirmed:
             return
         try:
             self._retry_timer.stop()
-        except Exception:
-            pass
+            self._force_confirmation_timer.stop()
+        except: pass
         my_log("Play failed event: {}".format(self._candidate_label))
         self.__playNext()
 
@@ -3008,7 +2993,7 @@ class ArabicPlayerSimplePlayer(Screen):
             my_log("Seek skipped: resume_pos={}".format(self._resume_pos))
             return
         try:
-            svc  = self.session.nav.getCurrentService()
+            svc = self.session.nav.getCurrentService()
             seek = svc and svc.seek()
             if seek:
                 seek.seekTo(self._resume_pos * 90000)
@@ -3016,36 +3001,17 @@ class ArabicPlayerSimplePlayer(Screen):
                 global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
                 global _GLOBAL_LAST_SEEK_TARGET
                 _GLOBAL_LAST_SEEK_TARGET = self._resume_pos
-                # base = target - 2s decoder buffer
-                # wall starts from NOW so estimate increments from here
-                _GLOBAL_PLAY_START_POS  = max(0, self._resume_pos - 2)
+                _GLOBAL_PLAY_START_POS = max(0, self._resume_pos - 2)
                 _GLOBAL_PLAY_START_WALL = time.time()
-                # update OSD immediately to show correct position
+                if self._paused:
+                    self._paused_elapsed = self._resume_pos
                 self._total_secs = 0
-                if getattr(self, "_osd_visible", False):
+                if self._osd_visible:
                     self.__updateOSD()
             else:
                 my_log("doSeek: no seek interface")
         except Exception as e:
             my_log("doSeek failed: {}".format(e))
-
-    def __stop(self):
-        self.__hideOSD()
-        if self._handoff:
-            return
-        _stop_pos_tracker()
-        for _t in ("_seek_timer","_retry_timer","_hide_timer","_osd_update_timer"):
-            try: getattr(self, _t).stop()
-            except Exception: pass
-        try: self.session.nav.stopService()
-        except Exception: pass
-        # small delay before restoring previous service reduces
-        # the single-frame flicker on black background
-        try:
-            from enigma import eCallLater
-            eCallLater(80, self.__restorePrevious)
-        except Exception:
-            self.__restorePrevious()
 
     def __restorePrevious(self):
         if self._restored_previous:
@@ -3053,6 +3019,8 @@ class ArabicPlayerSimplePlayer(Screen):
         self._restored_previous = True
         _restore_previous_service(self.session, self.previous_service)
 
+
+# ─── Global play function (DO NOT INDENT INSIDE CLASS) ────────────────────────
 def _play(session, url, title, resume_pos=0, item_url=""):
     try:
         svc_url = str(url).strip()
