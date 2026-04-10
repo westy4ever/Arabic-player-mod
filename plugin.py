@@ -2355,19 +2355,12 @@ class ArabicPlayerDetail(Screen):
             item = self._episodes[idx]
             self.session.open(ArabicPlayerDetail, item, self._site, "episode")
         else:
-            # movie / episode: open quality picker then extract
-            if not self._servers: return
-            movie_title = self["title"].getText()
-            if len(self._servers) == 1:
-                # single server -- skip picker, go direct
-                self._launchServer(self._servers[0])
-            else:
-                self.session.open(
-                    ArabicPlayerQualityPicker,
-                    movie_title,
-                    self._servers,
-                    self._launchServer
-                )
+            # movie / episode: extract and play selected server
+            if idx >= len(self._servers): return
+            server = self._servers[idx]
+            self["status"].setText("Extracting stream...")
+            self["status"].show()
+            threading.Thread(target=self._bgExtract, args=(server,), daemon=True).start()
 
     def _toggleFavorite(self):
         base = self._data or self._item
@@ -2397,11 +2390,6 @@ class ArabicPlayerDetail(Screen):
             my_log("TMDb refresh failed: {}".format(e))
             callInMainThread(self["status"].setText, "فشل تحديث TMDb")
 
-    def _launchServer(self, server):
-        """Called after quality picker selection (or direct for single server)."""
-        self["status"].setText(u"Extracting stream...")
-        self["status"].show()
-        threading.Thread(target=self._bgExtract, args=(server,), daemon=True).start()
 
     def _bgExtract(self, server):
         try:
@@ -2622,101 +2610,45 @@ def _restore_previous_service(session, previous_service):
     except Exception as e:
         my_log("Restore previous service failed: {}".format(e))
 
-# ─── Quality Picker Dialog ──────────────────────────────────────────────────
-class ArabicPlayerQualityPicker(Screen):
-    skin = """
-    <screen name="ArabicPlayerQualityPicker" position="center,center"
-            size="960,570" flags="wfNoBorder">
-        <widget name="bg"       position="0,0"    size="960,570"  backgroundColor="#0D1117" zPosition="1"/>
-        <widget name="top_bar"  position="0,0"    size="960,60"   backgroundColor="#161B22" zPosition="2"/>
-        <widget name="top_line" position="0,60"   size="960,3"    backgroundColor="#00E5FF" zPosition="3"/>
-        <widget name="title"    position="20,10"  size="920,42"   font="Regular;32"
-                foregroundColor="#00E5FF" transparent="1" zPosition="4"/>
-        <widget name="subtitle" position="20,72"  size="920,34"   font="Regular;24"
-                foregroundColor="#8B949E" transparent="1" zPosition="4"/>
-        <widget name="menu"     position="20,120" size="920,375"  zPosition="4"
-                scrollbarMode="showOnDemand"
-                foregroundColor="#F0F6FC" foregroundColorSelected="#0D1117"
-                backgroundColor="#0D1117" backgroundColorSelected="#00E5FF"
-                font="Regular;33" itemHeight="60"/>
-        <widget name="bot_line" position="0,504"  size="960,3"    backgroundColor="#00E5FF" zPosition="3"/>
-        <widget name="hint"     position="0,510"  size="960,54"   backgroundColor="#161B22" zPosition="2"/>
-        <widget name="hint_txt" position="20,522" size="920,30"   font="Regular;22"
-                foregroundColor="#484F58" transparent="1" zPosition="4" halign="center"/>
-    </screen>
-    """
-
-    _QUALITY_COLORS = {
-        "1080": ("#FFD740", u"★ 4K/FHD"),
-        "720":  ("#39D98A", u"★ HD"),
-        "480":  ("#58A6FF", u"● SD"),
-        "360":  ("#8B949E", u"● Low"),
-    }
-
-    def __init__(self, session, movie_title, servers, on_select):
-        Screen.__init__(self, session)
-        self._servers   = servers
-        self._on_select = on_select
-        self["bg"]       = Label("")
-        self["top_bar"]  = Label("")
-        self["top_line"] = Label("")
-        self["bot_line"] = Label("")
-        self["hint"]     = Label("")
-        self["title"]    = Label(u"Select Quality")
-        self["subtitle"] = Label(_single_line_text(movie_title, width=60))
-        self["hint_txt"] = Label(
-            u"OK = Play   ▲▼ = Navigate   Back = Cancel")
-        self["menu"]     = MenuList([])
-        rows = []
-        for srv in servers:
-            name = srv.get("name", "Server")
-            badge = ""
-            for key, (_, lbl) in self._QUALITY_COLORS.items():
-                if key in name:
-                    badge = "  " + lbl
-                    break
-            rows.append(name + badge)
-        self["menu"].setList(rows)
-        self["actions"] = ActionMap(
-            ["OkCancelActions", "DirectionActions"],
-            {"ok": self._pick, "cancel": self.close,
-             "up": lambda: self["menu"].up(),
-             "down": lambda: self["menu"].down()},
-            -1
-        )
-
-    def _pick(self):
-        idx = self["menu"].getSelectedIndex()
-        if 0 <= idx < len(self._servers):
-            srv = self._servers[idx]
-            self.close()
-            self._on_select(srv)
-        else:
-            self.close()
-
 
 # ─── Simple Player Fallback ─────────────────────────────────────────────────
 class ArabicPlayerSimplePlayer(Screen):
     skin = """
     <screen name="ArabicPlayerSimplePlayer" position="0,0" size="1920,1080" flags="wfNoBorder" backgroundColor="transparent">
-        <!-- === ArabicPlayer OSD Bar (y=870 to y=1080, total 210px) === -->
-        <!-- Background -->
-        <widget name="overlay_bg"  position="0,870"    size="1920,210" backgroundColor="#0D1117" zPosition="10" />
-        <!-- Row 1: Title bar (870-924, h=54) -->
-        <widget name="osd_titlebar" position="0,870"   size="1920,54" backgroundColor="#161B22" zPosition="11" />
-        <widget name="osd_title"    position="20,878"  size="1480,40" font="Regular;34" foregroundColor="#00E5FF" transparent="1" zPosition="12" />
-        <widget name="osd_durtext"  position="1520,878" size="380,40" font="Regular;30" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
-        <!-- Row 2: Progress bar (924-954, h=30) -->
-        <widget name="prog_bg"      position="0,924"   size="1920,30" backgroundColor="#21262D" zPosition="11" />
-        <widget name="prog_fill"    position="0,924"   size="2,30" backgroundColor="#00E5FF" zPosition="12" />
-        <widget name="prog_pct"     position="0,924"   size="1920,30" font="Regular;20" foregroundColor="#F0F6FC" transparent="1" zPosition="13" halign="center" />
-        <!-- Row 3: Elapsed | Status | Hints (954-1020, h=66) -->
-        <widget name="osd_elapsed"  position="20,960"  size="320,48" font="Regular;38" foregroundColor="#FFD740" transparent="1" zPosition="12" />
-        <widget name="status"       position="660,960" size="600,48" font="Regular;38" foregroundColor="#39D98A" transparent="1" zPosition="12" halign="center" />
-        <widget name="osd_hints"    position="1320,960" size="580,48" font="Regular;30" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
-        <!-- Row 4: Key hints bar (1020-1080, h=60) -->
-        <widget name="osd_keybar"   position="0,1020"  size="1920,60" backgroundColor="#161B22" zPosition="11" />
-        <widget name="osd_keys"     position="20,1032" size="1880,40" font="Regular;28" foregroundColor="#484F58" transparent="1" zPosition="12" halign="center" />
+
+        <!-- ── Shadow layer (slightly larger, softer) ── -->
+        <widget name="osd_shadow"   position="148,856" size="1624,230" backgroundColor="#000000" zPosition="9" />
+
+        <!-- ── Main OSD card (1600×210, centered, 160px margins) ── -->
+        <widget name="overlay_bg"   position="160,860" size="1600,210" backgroundColor="#0A0E14" zPosition="10" />
+
+        <!-- ── Top accent line (cyan, full card width) ── -->
+        <widget name="osd_topline"  position="160,860" size="1600,3" backgroundColor="#00E5FF" zPosition="11" />
+
+        <!-- ROW 1: Title + duration  (y=863, h=46) ── -->
+        <widget name="osd_titlebar" position="160,860" size="1600,52" backgroundColor="#0D1520" zPosition="11" />
+        <widget name="osd_title"    position="180,868" size="1180,38" font="Regular;30" foregroundColor="#00E5FF" transparent="1" zPosition="12" />
+        <widget name="osd_durtext"  position="1380,868" size="360,38" font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
+
+        <!-- ROW 2: Progress bar track + fill + glow head (y=912, h=20) ── -->
+        <widget name="prog_bg"      position="160,912" size="1600,20" backgroundColor="#1C2333" zPosition="11" />
+        <widget name="prog_fill"    position="160,912" size="2,20" backgroundColor="#00B4D8" zPosition="12" />
+        <widget name="prog_head"    position="160,910" size="4,24" backgroundColor="#00E5FF" zPosition="13" />
+        <widget name="prog_pct"     position="160,912" size="1600,20" font="Regular;16" foregroundColor="#FFFFFF" transparent="1" zPosition="14" halign="center" />
+
+        <!-- ROW 3: Elapsed | Status center | Seek hint (y=932, h=54) ── -->
+        <widget name="osd_elapsed"  position="180,938" size="320,44" font="Regular;36" foregroundColor="#FFD740" transparent="1" zPosition="12" />
+        <widget name="status"       position="640,938" size="640,44" font="Regular;36" foregroundColor="#39D98A" transparent="1" zPosition="12" halign="center" />
+        <widget name="osd_hints"    position="1220,938" size="520,44" font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
+
+        <!-- ROW 4: Divider + key-hint bar (y=982, h=48) ── -->
+        <widget name="osd_divider"  position="160,982" size="1600,2" backgroundColor="#1C2333" zPosition="11" />
+        <widget name="osd_keybar"   position="160,984" size="1600,46" backgroundColor="#0D1520" zPosition="11" />
+        <widget name="osd_keys"     position="180,992" size="1560,34" font="Regular;24" foregroundColor="#484F58" transparent="1" zPosition="12" halign="center" />
+
+        <!-- ── Bottom accent line ── -->
+        <widget name="osd_botline"  position="160,1027" size="1600,3" backgroundColor="#0A2040" zPosition="11" />
+
     </screen>
     """
 
@@ -2725,16 +2657,23 @@ class ArabicPlayerSimplePlayer(Screen):
         self["overlay_bg"]   = Label("")
         self["status"]       = Label("جاري التشغيل...")
         # OSD widgets required by v7 skin
+        self["osd_shadow"]   = Label("")
         self["osd_titlebar"] = Label("")
         self["osd_title"]    = Label("")
         self["osd_durtext"]  = Label("")
+        self["osd_durtext2"] = Label("")
+        self["osd_topline"]  = Label("")
         self["prog_bg"]      = Label("")
         self["prog_fill"]    = Label("")
+        self["prog_head"]    = Label("")
         self["prog_pct"]     = Label("")
         self["osd_elapsed"]  = Label("")
         self["osd_hints"]    = Label("")
+        self["osd_divider"]  = Label("")
         self["osd_keybar"]   = Label("")
+        self["osd_keybar2"]  = Label("")
         self["osd_keys"]     = Label("")
+        self["osd_botline"]  = Label("")
         self.title = title
         self.candidates = candidates or []
         self.previous_service = _copy_service_ref(previous_service)
@@ -2756,6 +2695,7 @@ class ArabicPlayerSimplePlayer(Screen):
         self._osd_update_timer.callback.append(self.__updateOSD)
         self._osd_visible = False
         self._total_secs  = 0
+        self._osd_auto_hide_secs = 4
         self._osd_update_timer = eTimer()
         self._osd_update_timer.callback.append(self.__updateOSD)
         self._osd_visible = False
@@ -2805,17 +2745,16 @@ class ArabicPlayerSimplePlayer(Screen):
             eventmap[ev_video] = self.__onConfirmed
         self._events = ServiceEventTracker(screen=self, eventmap=eventmap)
         self.onLayoutFinish.append(self.__initOSD)
-        self.onLayoutFinish.append(self.__initOSD)
-        self.onLayoutFinish.append(self.__initOSD)
-        self.onLayoutFinish.append(self.__initOSD)
         self.onLayoutFinish.append(self.__playNext)
         self.onClose.append(self.__stop)
 
     # ── OSD helpers ──────────────────────────────────────────────
     _OSD_WIDGETS = [
-        "overlay_bg","osd_titlebar","osd_title","osd_durtext",
-        "prog_bg","prog_fill","prog_pct","osd_elapsed",
-        "status","osd_hints","osd_keybar","osd_keys",
+        "osd_shadow","overlay_bg","osd_topline","osd_botline",
+        "osd_titlebar","osd_title","osd_durtext","osd_durtext2",
+        "prog_bg","prog_fill","prog_head","prog_pct","osd_elapsed",
+        "status","osd_hints","osd_divider",
+        "osd_keybar","osd_keybar2","osd_keys",
     ]
 
     def __initOSD(self):
@@ -2831,7 +2770,7 @@ class ArabicPlayerSimplePlayer(Screen):
             try: self[_w].hide()
             except Exception: pass
 
-    def __showOSD(self):
+    def __showOSD(self, auto_hide=True):
         self._osd_visible = True
         for _w in self._OSD_WIDGETS:
             try: self[_w].show()
@@ -2839,9 +2778,17 @@ class ArabicPlayerSimplePlayer(Screen):
         self.__updateOSD()
         try: self._osd_update_timer.start(1000, False)
         except Exception: pass
+        if auto_hide:
+            try:
+                secs = getattr(self, "_osd_auto_hide_secs", 4)
+                self._hide_timer.stop()
+                self._hide_timer.start(secs * 1000, True)
+            except Exception: pass
 
     def __updateOSD(self):
         if not getattr(self, "_osd_visible", False):
+            try: self._osd_update_timer.stop()
+            except Exception: pass
             return
         try:
             wall = _GLOBAL_PLAY_START_WALL
@@ -2868,155 +2815,28 @@ class ArabicPlayerSimplePlayer(Screen):
                 self["osd_durtext"].setText(
                     "-{:02d}:{:02d}:{:02d}  {:02d}:{:02d}:{:02d}".format(hr,mr,sr,ht,mt,st))
                 self["prog_pct"].setText("{:.1f}%".format(pct*100))
-                fw = max(2, int(1920 * pct))
-            else:
-                self["osd_durtext"].setText("")
-                self["prog_pct"].setText("")
-                fw = 2
-            try:
-                from enigma import eSize
-                self["prog_fill"].instance.setSize(eSize(fw, 20))
-            except Exception: pass
-        except Exception as e:
-            my_log("updateOSD error: {}".format(e))
-
-    # ── playback ─────────────────────────────────────────────────
-    # ── OSD helpers ──────────────────────────────────────────────
-    _OSD_WIDGETS = [
-        "overlay_bg","osd_titlebar","osd_title","osd_durtext",
-        "prog_bg","prog_fill","prog_pct","osd_elapsed",
-        "status","osd_hints","osd_keybar","osd_keys",
-    ]
-
-    def __initOSD(self):
-        for _w in self._OSD_WIDGETS:
-            try: self[_w].hide()
-            except Exception: pass
-
-    def __hideOSD(self):
-        self._osd_visible = False
-        try: self._osd_update_timer.stop()
-        except Exception: pass
-        for _w in self._OSD_WIDGETS:
-            try: self[_w].hide()
-            except Exception: pass
-
-    def __showOSD(self):
-        self._osd_visible = True
-        for _w in self._OSD_WIDGETS:
-            try: self[_w].show()
-            except Exception: pass
-        self.__updateOSD()
-        try: self._osd_update_timer.start(1000, False)
-        except Exception: pass
-
-    def __updateOSD(self):
-        if not getattr(self, "_osd_visible", False):
-            return
-        try:
-            wall = _GLOBAL_PLAY_START_WALL
-            base = _GLOBAL_PLAY_START_POS
-            elapsed = max(0, int((time.time() - wall) + base)) if wall else 0
-            he = elapsed // 3600; me = (elapsed % 3600) // 60; se = elapsed % 60
-            self["osd_elapsed"].setText("{:02d}:{:02d}:{:02d}".format(he, me, se))
-            total = getattr(self, "_total_secs", 0)
-            if not total:
-                try:
-                    svc  = self.session.nav.getCurrentService()
-                    seek = svc and svc.seek()
-                    if seek:
-                        r = seek.getLength()
-                        if r and r[0] == 0 and r[1] > 0:
-                            total = r[1] // 90000
-                            self._total_secs = total
-                except Exception: pass
-            if total > 0:
                 rem = max(0, total - elapsed)
                 pct = min(1.0, float(elapsed) / float(total))
                 hr=rem//3600; mr=(rem%3600)//60; sr=rem%60
                 ht=total//3600; mt=(total%3600)//60; st=total%60
-                self["osd_durtext"].setText(
-                    "-{:02d}:{:02d}:{:02d}  {:02d}:{:02d}:{:02d}".format(hr,mr,sr,ht,mt,st))
-                self["prog_pct"].setText("{:.1f}%".format(pct*100))
+                self["osd_hints"].setText("-{:02d}:{:02d}:{:02d}".format(hr,mr,sr))
+                self["osd_durtext2"].setText("{:02d}:{:02d}:{:02d}".format(ht,mt,st))
+                self["osd_durtext"].setText("")
+                self["prog_pct"].setText("{:.1f} %".format(pct*100))
                 fw = max(2, int(1920 * pct))
             else:
+                self["osd_hints"].setText("")
                 self["osd_durtext"].setText("")
+                self["osd_durtext2"].setText("")
                 self["prog_pct"].setText("")
                 fw = 2
             try:
-                from enigma import eSize
-                self["prog_fill"].instance.setSize(eSize(fw, 20))
+                from enigma import eSize, ePoint
+                self["prog_fill"].instance.setSize(eSize(fw, 24))
+                self["prog_head"].instance.move(ePoint(max(0,fw-2), 929))
             except Exception: pass
-        except Exception as e:
-            my_log("updateOSD error: {}".format(e))
-
-    # ── playback ─────────────────────────────────────────────────
-    # ── OSD helpers ──────────────────────────────────────────────
-    _OSD_WIDGETS = [
-        "overlay_bg","osd_titlebar","osd_title","osd_durtext",
-        "prog_bg","prog_fill","prog_pct","osd_elapsed",
-        "status","osd_hints","osd_keybar","osd_keys",
-    ]
-
-    def __initOSD(self):
-        for _w in self._OSD_WIDGETS:
-            try: self[_w].hide()
-            except Exception: pass
-
-    def __hideOSD(self):
-        self._osd_visible = False
-        try: self._osd_update_timer.stop()
-        except Exception: pass
-        for _w in self._OSD_WIDGETS:
-            try: self[_w].hide()
-            except Exception: pass
-
-    def __showOSD(self):
-        self._osd_visible = True
-        for _w in self._OSD_WIDGETS:
-            try: self[_w].show()
-            except Exception: pass
-        self.__updateOSD()
-        try: self._osd_update_timer.start(1000, False)
-        except Exception: pass
-
-    def __updateOSD(self):
-        if not getattr(self, "_osd_visible", False):
-            return
-        try:
-            wall = _GLOBAL_PLAY_START_WALL
-            base = _GLOBAL_PLAY_START_POS
-            elapsed = max(0, int((time.time() - wall) + base)) if wall else 0
-            he = elapsed // 3600; me = (elapsed % 3600) // 60; se = elapsed % 60
-            self["osd_elapsed"].setText("{:02d}:{:02d}:{:02d}".format(he, me, se))
-            total = getattr(self, "_total_secs", 0)
-            if not total:
-                try:
-                    svc  = self.session.nav.getCurrentService()
-                    seek = svc and svc.seek()
-                    if seek:
-                        r = seek.getLength()
-                        if r and r[0] == 0 and r[1] > 0:
-                            total = r[1] // 90000
-                            self._total_secs = total
-                except Exception: pass
-            if total > 0:
-                rem = max(0, total - elapsed)
-                pct = min(1.0, float(elapsed) / float(total))
-                hr=rem//3600; mr=(rem%3600)//60; sr=rem%60
-                ht=total//3600; mt=(total%3600)//60; st=total%60
-                self["osd_durtext"].setText(
-                    "-{:02d}:{:02d}:{:02d}  {:02d}:{:02d}:{:02d}".format(hr,mr,sr,ht,mt,st))
-                self["prog_pct"].setText("{:.1f}%".format(pct*100))
-                fw = max(2, int(1920 * pct))
-            else:
-                self["osd_durtext"].setText("")
-                self["prog_pct"].setText("")
-                fw = 2
-            try:
-                from enigma import eSize
-                self["prog_fill"].instance.setSize(eSize(fw, 20))
-            except Exception: pass
+            self["osd_keys"].setText("OK=Pause  << -10s  +10s >>  <<< -60s  +60s >>>")
+            self["osd_keybar2"].setText("Stop = Save & Exit")
         except Exception as e:
             my_log("updateOSD error: {}".format(e))
 
@@ -3065,7 +2885,11 @@ class ArabicPlayerSimplePlayer(Screen):
         _start_pos_tracker(self.session, self._item_url, start_pos=self._resume_pos)
         if self._resume_pos > 30:
             self._seek_timer.start(2000, True)
-        self["status"].hide()
+        # Show OSD briefly then auto-hide
+        self["osd_title"].setText(self.title)
+        self["status"].setText(u"▶ Playing")
+        self._total_secs = 0
+        self.__showOSD()  # auto-hides after 4s
 
     def __togglePause(self):
         try:
@@ -3083,12 +2907,10 @@ class ArabicPlayerSimplePlayer(Screen):
                 p.pause()
                 self._paused = True
                 self["status"].setText(u"⏸ Paused")
-            self.__showOSD()
-            self._hide_timer.start(2000, True)
+            self.__showOSD()  # auto-hides after 4s
         except Exception as e:
             my_log("togglePause error: {}".format(e))
             self.__showOSD()
-            self._hide_timer.start(2000, True)
 
     def __seek(self, delta_secs):
         try:
@@ -3210,23 +3032,20 @@ class ArabicPlayerSimplePlayer(Screen):
     def __stop(self):
         self.__hideOSD()
         if self._handoff:
-            # MoviePlayer callback handles tracker + restore
             return
-        # manual cancel: stop everything and restore previous service
         _stop_pos_tracker()
+        for _t in ("_seek_timer","_retry_timer","_hide_timer","_osd_update_timer"):
+            try: getattr(self, _t).stop()
+            except Exception: pass
+        try: self.session.nav.stopService()
+        except Exception: pass
+        # small delay before restoring previous service reduces
+        # the single-frame flicker on black background
         try:
-            self._seek_timer.stop()
+            from enigma import eCallLater
+            eCallLater(80, self.__restorePrevious)
         except Exception:
-            pass
-        try:
-            self._retry_timer.stop()
-        except Exception:
-            pass
-        try:
-            self.session.nav.stopService()
-        except Exception:
-            pass
-        self.__restorePrevious()
+            self.__restorePrevious()
 
     def __restorePrevious(self):
         if self._restored_previous:
