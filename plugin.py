@@ -2592,10 +2592,7 @@ class ArabicPlayerSimplePlayer(Screen):
         <widget name="osd_titlebar" position="160,860" size="1600,52" backgroundColor="#0D1520" zPosition="11" />
         <widget name="osd_title"    position="180,868" size="1180,38" font="Regular;30" foregroundColor="#00E5FF" transparent="1" zPosition="12" />
         <widget name="osd_durtext"  position="1380,868" size="360,38" font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
-        <widget name="prog_bg"      position="160,912" size="1600,20" backgroundColor="#1C2333" zPosition="11" />
-        <widget name="prog_fill"    position="160,912" size="1600,20" zPosition="12" type="eCanvas" />
-        <widget name="prog_head"    position="160,910" size="4,24" backgroundColor="#00E5FF" zPosition="13" />
-        <widget name="prog_pct"     position="160,912" size="1600,20" font="Regular;16" foregroundColor="#FFFFFF" transparent="1" zPosition="14" halign="center" />
+        <widget name="prog_bar"     position="160,906" size="1600,30" font="Regular;22" foregroundColor="#00B4D8" transparent="1" zPosition="12" halign="left" />
         <widget name="osd_elapsed"  position="180,938" size="320,44" font="Regular;36" foregroundColor="#FFD740" transparent="1" zPosition="12" />
         <widget name="status"       position="640,938" size="640,44" font="Regular;36" foregroundColor="#39D98A" transparent="1" zPosition="12" halign="center" />
         <widget name="osd_hints"    position="1220,938" size="520,44" font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
@@ -2616,10 +2613,7 @@ class ArabicPlayerSimplePlayer(Screen):
         self["osd_title"]    = Label("")
         self["osd_durtext"]  = Label("")
         self["osd_topline"]  = Label("")
-        self["prog_bg"]      = Label("")
-        self["prog_fill"]    = Label("")        # skin will override to eCanvas
-        self["prog_head"]    = Label("")
-        self["prog_pct"]     = Label("")
+        self["prog_bar"]     = Label("")
         self["osd_elapsed"]  = Label("")
         self["osd_hints"]    = Label("")
         self["osd_divider"]  = Label("")
@@ -2641,6 +2635,9 @@ class ArabicPlayerSimplePlayer(Screen):
         self._item_url  = item_url or ""
         self._seek_timer = eTimer()
         self._seek_timer.callback.append(self.__doSeek)
+        self._seek_retry_count = 0
+        self._seek_verify_timer = eTimer()
+        self._seek_verify_timer.callback.append(self.__verifySeek)
         self._hide_timer = eTimer()
         self._hide_timer.callback.append(self.__hideOSD)
         self._osd_update_timer = eTimer()
@@ -2652,9 +2649,6 @@ class ArabicPlayerSimplePlayer(Screen):
         self._paused_elapsed = 0
         self._force_confirmation_timer = eTimer()
         self._force_confirmation_timer.callback.append(self.__forceConfirm)
-        self._prog_canvas = None      # will be set in __initOSD
-        self._prog_width = 1600
-        self._prog_height = 20
 
         self["actions"] = ActionMap(
             ["OkCancelActions", "MediaPlayerActions", "InfobarSeekActions", "DirectionActions", "ColorActions"],
@@ -2688,7 +2682,7 @@ class ArabicPlayerSimplePlayer(Screen):
     _OSD_WIDGETS = [
         "osd_shadow","overlay_bg","osd_topline","osd_botline",
         "osd_titlebar","osd_title","osd_durtext",
-        "prog_bg","prog_fill","prog_head","prog_pct","osd_elapsed",
+        "prog_bar","osd_elapsed",
         "status","osd_hints","osd_divider",
         "osd_keybar","osd_keys",
     ]
@@ -2698,17 +2692,7 @@ class ArabicPlayerSimplePlayer(Screen):
         for w in self._OSD_WIDGETS:
             try: self[w].hide()
             except: pass
-        # Now set up the canvas for progress bar (skin has applied type="eCanvas")
-        try:
-            self._prog_canvas = self["prog_fill"].instance
-            self._prog_canvas.setBackgroundColor(0x1C2333FF)  # dark background
-            self._prog_canvas.show()
-        except Exception as e:
-            my_log("__initOSD canvas setup error: {}".format(e))
-        # Keep the progress bar canvas visible
-        try:
-            self["prog_fill"].show()
-        except: pass
+        # Text-based progress bar -- no canvas setup needed
 
     def __hideOSD(self):
         self._osd_visible = False
@@ -2771,25 +2755,14 @@ class ArabicPlayerSimplePlayer(Screen):
                 mt = (total % 3600) // 60
                 st = total % 60
                 self["osd_durtext"].setText("-{:02d}:{:02d}:{:02d}  {:02d}:{:02d}:{:02d}".format(hr, mr, sr, ht, mt, st))
-                self["prog_pct"].setText("{:.1f}%".format(pct * 100))
-
-                # --- Canvas drawing (if canvas is ready) ---
-                if self._prog_canvas:
-                    fw = max(2, int(self._prog_width * pct))
-                    from enigma import gRGB, gPainter
-                    # Clear canvas with background colour
-                    self._prog_canvas.fill(0x1C2333FF)
-                    # Draw filled rectangle in progress colour
-                    painter = gPainter(self._prog_canvas)
-                    painter.setBackgroundColor(gRGB(0x00, 0xB4, 0xD8))
-                    painter.fillRectangle(0, 0, fw, self._prog_height)
-                    painter.flush()
-                    self._prog_canvas.invalidate()
-                    # Move the glowing head
-                    self["prog_head"].instance.move(ePoint(160 + fw - 2, 910))
+                # Unicode text-based progress bar (works on HiSilicon during video)
+                BAR_W = 48
+                filled = max(0, min(BAR_W, int(pct * BAR_W)))
+                bar = u"█" * filled + u"░" * (BAR_W - filled)
+                self["prog_bar"].setText(u"{} {:.1f}%".format(bar, pct * 100))
             else:
                 self["osd_durtext"].setText("")
-                self["prog_pct"].setText("")
+                self["prog_bar"].setText("")
             self["osd_keys"].setText("OK=Pause  << -10s  +10s >>  <<< -60s  +60s >>>   Green=Restart   Stop=Save&Exit")
         except Exception as e:
             my_log("updateOSD error: {}".format(e))
@@ -2844,13 +2817,13 @@ class ArabicPlayerSimplePlayer(Screen):
         my_log("Play confirmed: {}".format(self._candidate_label))
         _start_pos_tracker(self.session, self._item_url, start_pos=self._resume_pos)
         if self._resume_pos > 30:
-            self._seek_timer.start(2000, True)
+            self._seek_retry_count = 0
+            self._seek_timer.start(6000, True)
         self["osd_title"].setText(self.title)
         self["status"].setText(u"▶ Playing")
         self._total_secs = 0
         self.__showOSD(True)
-        if self._prog_canvas:
-            self._prog_canvas.show()
+        # (no canvas to show -- text bar updates automatically)
 
     def __togglePause(self):
         try:
@@ -2963,7 +2936,7 @@ class ArabicPlayerSimplePlayer(Screen):
 
     def __stop(self):
         self.__hideOSD()
-        for t in ("_seek_timer","_retry_timer","_hide_timer","_osd_update_timer","_force_confirmation_timer"):
+        for t in ("_seek_timer","_seek_verify_timer","_retry_timer","_hide_timer","_osd_update_timer","_force_confirmation_timer"):
             try: getattr(self, t).stop()
             except: pass
 
@@ -2995,23 +2968,62 @@ class ArabicPlayerSimplePlayer(Screen):
         try:
             svc = self.session.nav.getCurrentService()
             seek = svc and svc.seek()
-            if seek:
-                seek.seekTo(self._resume_pos * 90000)
-                my_log("Resume seekTo: {}s".format(self._resume_pos))
-                global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
-                global _GLOBAL_LAST_SEEK_TARGET
-                _GLOBAL_LAST_SEEK_TARGET = self._resume_pos
-                _GLOBAL_PLAY_START_POS = max(0, self._resume_pos - 2)
-                _GLOBAL_PLAY_START_WALL = time.time()
-                if self._paused:
-                    self._paused_elapsed = self._resume_pos
-                self._total_secs = 0
-                if self._osd_visible:
-                    self.__updateOSD()
-            else:
-                my_log("doSeek: no seek interface")
+            if not seek:
+                # Stream not ready yet — retry if attempts remain
+                self._seek_retry_count += 1
+                if self._seek_retry_count <= 3:
+                    my_log("doSeek: no seek interface, retry {}/3 in 4s".format(self._seek_retry_count))
+                    self._seek_timer.start(4000, True)
+                else:
+                    my_log("doSeek: giving up after 3 retries")
+                return
+
+            # Fire the seek
+            seek.seekTo(self._resume_pos * 90000)
+            my_log("Resume seekTo: {}s (attempt {})".format(self._resume_pos, self._seek_retry_count + 1))
+
+            global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
+            global _GLOBAL_LAST_SEEK_TARGET
+            _GLOBAL_LAST_SEEK_TARGET = self._resume_pos
+            _GLOBAL_PLAY_START_POS = max(0, self._resume_pos - 2)
+            _GLOBAL_PLAY_START_WALL = time.time()
+            if self._paused:
+                self._paused_elapsed = self._resume_pos
+            self._total_secs = 0
+
+            # Schedule a verification 4s later to confirm seek actually worked
+            self._seek_verify_timer.start(4000, True)
+
+            if self._osd_visible:
+                self.__updateOSD()
         except Exception as e:
-            my_log("doSeek failed: {}".format(e))
+            my_log("doSeek failed: {} — retry {}/3".format(e, self._seek_retry_count))
+            self._seek_retry_count += 1
+            if self._seek_retry_count <= 3:
+                self._seek_timer.start(4000, True)
+
+    def __verifySeek(self):
+        """Check that seek actually landed near the target; retry if not."""
+        if not self._resume_pos or self._resume_pos <= 30:
+            return
+        try:
+            wall = _GLOBAL_PLAY_START_WALL
+            base = _GLOBAL_PLAY_START_POS
+            if wall:
+                elapsed = int((time.time() - wall) + base)
+            else:
+                elapsed = 0
+
+            # If position is still near 0 the seek was silently ignored
+            if elapsed < 10 and self._seek_retry_count <= 3:
+                self._seek_retry_count += 1
+                my_log("verifySeek: pos={}s, seek likely ignored — retry {}/3".format(
+                    elapsed, self._seek_retry_count))
+                self._seek_timer.start(3000, True)
+            else:
+                my_log("verifySeek: pos={}s OK (target={}s)".format(elapsed, self._resume_pos))
+        except Exception as e:
+            my_log("verifySeek error: {}".format(e))
 
     def __restorePrevious(self):
         if self._restored_previous:
