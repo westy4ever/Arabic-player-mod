@@ -20,7 +20,6 @@ import sys
 import json
 import re
 import threading
-import traceback
 import time
 import http.server
 import urllib.request as urllib2
@@ -44,45 +43,35 @@ from Components.Label        import Label
 from Components.Pixmap       import Pixmap
 from Components.MenuList     import MenuList
 from Components.ScrollLabel  import ScrollLabel
-from Components.Sources.StaticText import StaticText
-from enigma import eTimer, ePicLoad, eServiceReference, iPlayableService, eSize, ePoint
-from Tools.LoadPixmap        import LoadPixmap
+from enigma import eTimer, ePicLoad, eServiceReference, iPlayableService
 from Components.ServiceEventTracker import ServiceEventTracker
 
-# Imports for custom player
-try:
-    from Screens.InfoBarGenerics import (
-        InfoBarSeek, InfoBarShowHide,
-        InfoBarAudioSelection, InfoBarNotifications,
-    )
-except ImportError:
-     pass  # not used directly; safe to ignore on builds that split this module
-
-_PLUGIN_VERSION = "2.0.2"  # green button added
+_PLUGIN_VERSION = "2.0.2"
 _PLUGIN_NAME    = "ArabicPlayer"
 _PLUGIN_OWNER   = "أحمد إبراهيم"
 _DEFAULT_TMDB_API_KEY = "01fd9e035ea1458748e99eb7216b0259"
 _TYPE_LABELS    = {"movie": "فيلم", "series": "مسلسل", "episode": "حلقة"}
 _TMDB_API_BASE  = "https://api.themoviedb.org/3"
 _TMDB_IMG_BASE  = "https://image.tmdb.org/t/p/w500"
-_SEARCH_SITE_ORDER = ("egydead", "akoam", "arabseed", "wecima", "topcinema", "fasel", "shaheed""yts2")
+# FIX #1: removed invalid concatenated "shaheed""yts2" → was missing comma
+_SEARCH_SITE_ORDER = ("egydead", "akoam", "arabseed", "wecima", "topcinema", "fasel", "shaheed")
 
 # ─── Neon Color Palette ──────────────────────────────────────────────────────
 _CLR = {
-    "bg":           "#0D1117",   # أسود مزرق عميق
-    "surface":      "#161B22",   # رمادي مظلم
-    "surface2":     "#1C2333",   # رمادي أفتح قليلاً
-    "selected":     "#21262D",   # خلفية العنصر المحدد
-    "border":       "#30363D",   # حدود خفيفة
-    "cyan":         "#00E5FF",   # سيان نيون
-    "purple":       "#E040FB",   # بنفسجي نيون
-    "gold":         "#FFD740",   # ذهبي دافئ
-    "green":        "#39D98A",   # أخضر نيون
-    "red":          "#FF6B6B",   # أحمر ناعم
-    "blue":         "#58A6FF",   # أزرق فاتح
-    "text":         "#F0F6FC",   # نص أبيض فاتح
-    "text2":        "#8B949E",   # نص ثانوي
-    "text_dim":     "#484F58",   # نص باهت
+    "bg":           "#0D1117",
+    "surface":      "#161B22",
+    "surface2":     "#1C2333",
+    "selected":     "#21262D",
+    "border":       "#30363D",
+    "cyan":         "#00E5FF",
+    "purple":       "#E040FB",
+    "gold":         "#FFD740",
+    "green":        "#39D98A",
+    "red":          "#FF6B6B",
+    "blue":         "#58A6FF",
+    "text":         "#F0F6FC",
+    "text2":        "#8B949E",
+    "text_dim":     "#484F58",
 }
 
 # ─── Poster Cache ────────────────────────────────────────────────────────────
@@ -116,7 +105,7 @@ _EXTRACTOR_MAP = {
     "wecima":     "extractors.wecima",
     "shaheed":    "extractors.shaheed",
     "topcinema":  "extractors.topcinema",
-    "fasel":      "extractors.fasel"
+    "fasel":      "extractors.fasel",
 }
 
 def _get_extractor(site):
@@ -124,41 +113,41 @@ def _get_extractor(site):
     if not module_name:
         module_name = _EXTRACTOR_MAP.get("egydead")
     return __import__(module_name, fromlist=["get_categories", "get_category_items", "get_page", "search", "extract_stream"])
+
 _SITE_META = {
     "egydead": {
         "title": "EgyDead",
-        "tagline": "واجهة حديثة وبوسترات ومكتبة متجددة"
-},
+        "tagline": "واجهة حديثة وبوسترات ومكتبة متجددة",
+    },
     "akoam": {
         "title": "Akoam",
-        "tagline": "محتوى متنوع مع صفحات تفصيلية واضحة"
-},
+        "tagline": "محتوى متنوع مع صفحات تفصيلية واضحة",
+    },
     "arabseed": {
         "title": "Arabseed",
-        "tagline": "تصنيفات عربية وأجنبية وحلقات مرتبة"
-},
+        "tagline": "تصنيفات عربية وأجنبية وحلقات مرتبة",
+    },
     "wecima": {
         "title": "Wecima",
-        "tagline": "أقسام واسعة وبحث وسيرفرات مباشرة"
-},
+        "tagline": "أقسام واسعة وبحث وسيرفرات مباشرة",
+    },
     "shaheed": {
         "title": "Shaheed4u",
-        "tagline": "تحديثات المسلسلات والأفلام الحصرية بجميع الجودات"
-},
+        "tagline": "تحديثات المسلسلات والأفلام الحصرية بجميع الجودات",
+    },
     "topcinema": {
         "title": "TopCinemaa",
-        "tagline": "مكتبة ضخمة من الأفلام والمسلسلات والسلاسل"
-},
+        "tagline": "مكتبة ضخمة من الأفلام والمسلسلات والسلاسل",
+    },
     "fasel": {
         "title": "FaselHD",
-        "tagline": "دقة عالية وسيرفرات متعددة للمشاهدة بدون تقطيع"
-}
+        "tagline": "دقة عالية وسيرفرات متعددة للمشاهدة بدون تقطيع",
+    },
 }
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 from extractors.base import log as base_log, UA, fetch as base_fetch
 
-# Global User-Agent matching the successful curl test
 SAFE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 _STATE_CACHE = None
 
@@ -193,23 +182,19 @@ def _strip_arabic_from_english_title(title):
     if not stripped:
         return title
     ar_count = sum(1 for c in stripped if "\u0600" <= c <= "\u06ff")
-    # If more than 30% Arabic → pure/mixed Arabic title, leave it alone
     if ar_count / len(stripped) >= 0.30:
         return title
-    # Predominantly Latin → remove Arabic character sequences
-    import re as _re
-    cleaned = _re.sub(r"[\u0600-\u06ff]+", " ", title)
-    # Remove leftover separators at edges and clean spaces
-    cleaned = _re.sub(r"[\s|\-–_]+$", "", cleaned)
-    cleaned = _re.sub(r"^[\s|\-–_]+", "", cleaned)
-    cleaned = _re.sub(r"\s{2,}", " ", cleaned).strip(" -|_")
+    cleaned = re.sub(r"[\u0600-\u06ff]+", " ", title)
+    cleaned = re.sub(r"[\s|\-–_]+$", "", cleaned)
+    cleaned = re.sub(r"^[\s|\-–_]+", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -|_")
     return cleaned if cleaned.strip() else title
 
 
 def _clean_title_for_tmdb(title):
     if not title: return ""
     junk = [
-        u"مترجم", u"اون لاين", u"بجودة", u"عالية", u"كامل", u"تحميل", u"مشاهدة", u"فيلم", u"مسلسل", 
+        u"مترجم", u"اون لاين", u"بجودة", u"عالية", u"كامل", u"تحميل", u"مشاهدة", u"فيلم", u"مسلسل",
         u"انمي", u"كرتون", u"حصري", u"شاشه", u"كامله", u"نسخة", u"اصلية", u"bluray", u"web-dl", u"hdtv", u"720p", u"1080p", u"4k"
     ]
     title = title.lower()
@@ -217,32 +202,6 @@ def _clean_title_for_tmdb(title):
         title = title.replace(word, "")
     title = re.sub(r'\s+\d{4}\s*$', '', title)
     return re.sub(r'\s+', ' ', title).strip()
-
-
-def _get_tmdb_poster(title, year=None, item_type="movie"):
-    if not _DEFAULT_TMDB_API_KEY: return ""
-    clean = _clean_title_for_tmdb(title)
-    if not clean: return ""
-    try:
-        url = "{}/search/{}?api_key={}&query={}".format(
-            _TMDB_API_BASE, 
-            "movie" if item_type == "movie" else "tv",
-            _DEFAULT_TMDB_API_KEY,
-            quote(clean)
-        )
-        if year:
-            url += "&year={}".format(year) if item_type == "movie" else "&first_air_date_year={}".format(year)
-            
-        req = urllib2.Request(url, headers={"User-Agent": SAFE_UA})
-        data = json.loads(urllib2.urlopen(req, timeout=5).read())
-        results = data.get("results", [])
-        if results:
-            path = results[0].get("poster_path")
-            if path:
-                return _TMDB_IMG_BASE + path
-    except Exception:
-        pass
-    return ""
 
 
 def _wrap_ui_text(text, width=40, max_lines=2, fallback=""):
@@ -291,8 +250,8 @@ def _site_search_item(site):
         "_action": "search_site",
         "_site": site,
         "type": "tool",
-        "plot": "ابحث داخل {} فقط بدون خلط النتائج مع باقي المصادر.".format(_site_label(site))
-}
+        "plot": "ابحث داخل {} فقط بدون خلط النتائج مع باقي المصادر.".format(_site_label(site)),
+    }
 
 
 def _dedupe_items(items):
@@ -309,12 +268,11 @@ def _dedupe_items(items):
 
 def _rank_search_items(items, query):
     q = _normalize_query(query)
-    # Split query into individual words (min 2 chars) for word-level matching
     q_words = [w for w in q.split() if len(w) >= 2] if q else []
 
-    strong   = []   # rank 0-3: full query or all words present
-    weak     = []   # rank 4-5: partial word overlap
-    no_match = []   # rank 9:   no overlap at all
+    strong   = []
+    weak     = []
+    no_match = []
 
     for item in _dedupe_items(items):
         title  = item.get("title", "")
@@ -332,11 +290,11 @@ def _rank_search_items(items, query):
         elif q_words:
             matched_words = sum(1 for w in q_words if w in ntitle)
             if matched_words == len(q_words):
-                rank = 3          # every word found → strong
+                rank = 3
             elif matched_words >= max(1, len(q_words) * 2 // 3):
-                rank = 4          # most words found → weak
+                rank = 4
             elif matched_words > 0:
-                rank = 5          # at least one word → weak
+                rank = 5
 
         entry = (rank, title.lower(), item)
         if rank <= 3:
@@ -351,11 +309,9 @@ def _rank_search_items(items, query):
 
     result = [r[2] for r in strong]
 
-    # Only pad with weak matches if strong results are too few
     if len(result) < 3:
         result += [r[2] for r in weak[:max(0, 5 - len(result))]]
 
-    # Last resort: no matches at all → return weak so the user sees something
     if not result and weak:
         result = [r[2] for r in weak]
 
@@ -426,11 +382,11 @@ def _default_state():
     return {
         "config": {
             "owner": _PLUGIN_OWNER,
-            "tmdb_api_key": _DEFAULT_TMDB_API_KEY
-},
+            "tmdb_api_key": _DEFAULT_TMDB_API_KEY,
+        },
         "favorites": [],
-        "history": []
-}
+        "history": [],
+    }
 
 
 def _load_state():
@@ -496,8 +452,8 @@ def _entry_from_item(item, site, m_type, extra=None):
         "_action": item.get("_action", "details"),
         "_site": item.get("_site", site),
         "_m_type": item.get("_m_type", m_type),
-        "_saved_at": int(time.time())
-}
+        "_saved_at": int(time.time()),
+    }
     if extra:
         entry.update(extra)
     return entry
@@ -507,7 +463,6 @@ def _upsert_library_item(bucket, entry, limit=100):
     state = _load_state()
     items = state.setdefault(bucket, [])
     key   = entry.get("url")
-    # preserve last_position_sec saved by the tracker from the previous session
     if not entry.get("last_position_sec"):
         for _old in items:
             if _old.get("url") == key and _old.get("last_position_sec"):
@@ -547,7 +502,6 @@ def _favorite_items():
 
 
 def _get_saved_position(url):
-    """Return last saved position in seconds (0 if none or < 30s)."""
     for item in (_load_state().get("history") or []):
         if item.get("url") == url:
             pos = int(item.get("last_position_sec") or 0)
@@ -556,15 +510,10 @@ def _get_saved_position(url):
 
 
 def _save_position(url, seconds):
-    """Persist last playback position to the matching history entry.
-    Pass seconds=0 to explicitly clear the resume point.
-    Positions 1-29s are ignored (not worth resuming).
-    """
     seconds = int(seconds or 0)
     if 0 < seconds < 30:
         my_log("_save_position: skipping {}s (< 30s threshold)".format(seconds))
         return
-    # seconds == 0 means explicit clear -- allow it through
     state = _load_state()
     for item in (state.get("history") or []):
         if item.get("url") == url:
@@ -573,16 +522,13 @@ def _save_position(url, seconds):
             return
 
 
-# Global position tracker -- module-level so it survives
-# SimplePlayer -> MoviePlayer screen transitions.
-# Uses wall-clock time instead of getPlayPosition() because
-# HiSilicon (VU+ Duo4K) returns a frozen PTS for HTTP streams.
+# Global position tracker
 _GLOBAL_POS_TIMER      = None
 _GLOBAL_POS_SESSION    = None
 _GLOBAL_POS_ITEM       = ""
-_GLOBAL_PLAY_START_WALL  = 0.0   # time.time() when play confirmed
-_GLOBAL_PLAY_START_POS   = 0     # resume_pos at play-start (seconds)
-_GLOBAL_LAST_SEEK_TARGET = -1    # last seekTo target in seconds (-1=none)
+_GLOBAL_PLAY_START_WALL  = 0.0
+_GLOBAL_PLAY_START_POS   = 0
+_GLOBAL_LAST_SEEK_TARGET = -1
 
 
 def _global_pos_tick():
@@ -605,7 +551,7 @@ def _start_pos_tracker(session, item_url, start_pos=0):
     global _GLOBAL_POS_TIMER, _GLOBAL_POS_SESSION, _GLOBAL_POS_ITEM
     global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
     global _GLOBAL_LAST_SEEK_TARGET
-    _GLOBAL_LAST_SEEK_TARGET = -1  # reset on each new play session
+    _GLOBAL_LAST_SEEK_TARGET = -1
     _GLOBAL_POS_SESSION     = session
     _GLOBAL_POS_ITEM        = item_url or ""
     _GLOBAL_PLAY_START_WALL = time.time()
@@ -631,7 +577,6 @@ def _stop_pos_tracker():
             _GLOBAL_POS_TIMER.stop()
     except Exception:
         pass
-
 
 
 def _library_search_suggestions(query="", current_site="", limit=8):
@@ -673,8 +618,8 @@ def _library_search_suggestions(query="", current_site="", limit=8):
                     "source": source_name,
                     "site": item.get("_site", ""),
                     "kind": _TYPE_LABELS.get(item.get("type", ""), ""),
-                    "year": item.get("year", "")
-}
+                    "year": item.get("year", ""),
+                }
             ))
     rows.sort(key=lambda row: (row[0], row[1], row[2]))
     return [row[3] for row in rows[:limit]]
@@ -875,8 +820,8 @@ def _tmdb_search_metadata(title, year="", item_type="movie"):
         "year": str(detail.get("release_date") or detail.get("first_air_date") or "")[:4],
         "genres": genres,
         "tmdb_id": detail.get("id"),
-        "tmdb_kind": media_kind
-}
+        "tmdb_kind": media_kind,
+    }
 
 
 def _merge_tmdb_data(data):
@@ -934,8 +879,8 @@ def _tmdb_search_suggestions(query, limit=8):
                     "source": "TMDb",
                     "site": "",
                     "kind": kind_label,
-                    "year": year
-})
+                    "year": year,
+                })
                 if len(suggestions) >= limit:
                     return suggestions[:limit]
         except Exception as e:
@@ -975,43 +920,7 @@ def _pick_plot_text(*sources):
     return _pick_plot_text_with_source(*sources)[0]
 
 
-def _wrap_plot_text(text, width=80, max_lines=5):
-    text = re.sub(r"\s+", " ", text or "").strip()
-    if not text:
-        return "القصة غير متوفرة حالياً لهذا العنصر."
-
-    words = text.split(" ")
-    lines = []
-    current = ""
-
-    for word in words:
-        candidate = word if not current else "{} {}".format(current, word)
-        if len(candidate) <= width:
-            current = candidate
-            continue
-        if current:
-            lines.append(current)
-            if len(lines) >= max_lines:
-                break
-        current = word
-
-    if len(lines) < max_lines and current:
-        lines.append(current)
-
-    if len(lines) > max_lines:
-        lines = lines[:max_lines]
-
-    if lines:
-        consumed = " ".join(lines)
-        if len(consumed) < len(text):
-            lines[-1] = lines[-1].rstrip(" .،") + "..."
-        return "\n".join(lines)
-
-    return text
-
-
 def _drain_cmit_queue():
-    """Drain callInMainThread queue on Enigma2 main loop."""
     with _CMIT_LOCK:
         items = list(_CMIT_QUEUE)
         del _CMIT_QUEUE[:]
@@ -1023,8 +932,6 @@ def _drain_cmit_queue():
 
 
 def callInMainThread(func, *args, **kwargs):
-    """Queue func for Enigma2 main loop via eTimer (50ms).
-    Avoids direct cross-thread calls that crash HiSilicon builds."""
     global _CMIT_TIMER
     with _CMIT_LOCK:
         _CMIT_QUEUE.append((func, args, kwargs))
@@ -1054,7 +961,6 @@ def start_proxy():
     if _PROXY_STARTED: return
     try:
         def run_server():
-            # Listen on 0.0.0.0 for maximum loopback compatibility
             server = http.server.HTTPServer(('0.0.0.0', _PROXY_PORT), LocalProxyHandler)
             server.serve_forever()
         t = threading.Thread(target=run_server)
@@ -1281,8 +1187,8 @@ class ArabicPlayerHome(Screen):
                 "up":     lambda: self["menu"].up(),
                 "down":   lambda: self["menu"].down(),
                 "left":   lambda: self["menu"].pageUp(),
-                "right":  lambda: self["menu"].pageDown()
-},
+                "right":  lambda: self["menu"].pageDown(),
+            },
             -1
         )
 
@@ -1404,9 +1310,9 @@ class ArabicPlayerHome(Screen):
             "header": {
                 "title": self["title_text"].getText(),
                 "subtitle": self["subtitle"].getText(),
-                "status": self["status"].getText()
-}
-})
+                "status": self["status"].getText(),
+            },
+        })
 
     def _clearTmpPosters(self):
         for p in self._tmp_posters:
@@ -1428,8 +1334,6 @@ class ArabicPlayerHome(Screen):
         self["menu"].setList([_decorate_item_title(i, self._site) for i in items])
         self["status"].setText("{} عنصر".format(len(items)))
         self._refreshPreview()
-        # Safety: onSelectionChanged may not fire if index stays at 0.
-        # Force a second refresh 700ms later to guarantee first item poster loads.
         try:
             self._first_item_timer.stop()
         except Exception:
@@ -1615,7 +1519,6 @@ class ArabicPlayerHome(Screen):
             "اختر التصنيف"
         )
 
-    # ── Loaders ───────────────────────────────────────────────────────────────
     def _loadCategory(self, url, name):
         self._push_nav_state()
         self._source = "category"
@@ -1754,7 +1657,6 @@ class ArabicPlayerHome(Screen):
         )
         self._setList(items)
 
-    # ── Open Item ─────────────────────────────────────────────────────────────
     def _openItem(self, item):
         self.session.open(
             ArabicPlayerDetail,
@@ -1844,8 +1746,8 @@ class ArabicPlayerSearch(Screen):
                 "red": self._clear_query,
                 "green": self._submit,
                 "yellow": self._edit_query,
-                "blue": self._toggle_scope
-},
+                "blue": self._toggle_scope,
+            },
             -1
         )
 
@@ -2007,8 +1909,8 @@ class ArabicPlayerSettings(Screen):
                 "left": self["body"].pageUp,
                 "right": self["body"].pageDown,
                 "yellow": self._edit_tmdb_key,
-                "blue": self._clear_tmdb_key
-},
+                "blue": self._clear_tmdb_key,
+            },
             -1
         )
         self._refresh()
@@ -2117,8 +2019,8 @@ class ArabicPlayerDetail(Screen):
         self._servers = []
         self._episodes = []
         self._tmp_posters = []
-        self._poster_loaded = False   # reset per detail screen instance
-        self._raw_title = ""          # set in _onLoaded, used by _onStreamFound
+        self._poster_loaded = False
+        self._raw_title = ""
 
         self["bg"]     = Label("")
         self["poster_box"] = Label("")
@@ -2153,8 +2055,8 @@ class ArabicPlayerDetail(Screen):
                 "up":     lambda: self["menu"].up(),
                 "down":   lambda: self["menu"].down(),
                 "left":   lambda: self["menu"].pageUp(),
-                "right":  lambda: self["menu"].pageDown()
-},
+                "right":  lambda: self["menu"].pageDown(),
+            },
             -1
         )
 
@@ -2169,8 +2071,7 @@ class ArabicPlayerDetail(Screen):
         def _watchdog():
             if not _done[0]:
                 my_log("_bgLoad watchdog: timeout for {}".format(url[:60]))
-                callInMainThread(self["status"].setText,
-                    u"Timeout — please try again")
+                callInMainThread(self["status"].setText, u"Timeout — please try again")
         _wt = threading.Timer(30, _watchdog)
         _wt.daemon = True
         _wt.start()
@@ -2237,7 +2138,6 @@ class ArabicPlayerDetail(Screen):
         self._data = data
         current_title = _strip_arabic_from_english_title(
             data.get("title") or self._item.get("title", ""))
-        # Store single-line raw title for player — widget version may contain \n
         self._raw_title = re.sub(r"\s+", " ", current_title).strip()
         self["title"].setText(_wrap_ui_text(current_title, width=30, max_lines=2, fallback="بدون عنوان"))
 
@@ -2278,6 +2178,7 @@ class ArabicPlayerDetail(Screen):
         if current_title:
             plot_label = "{}: {}".format(plot_label, current_title[:32])
         self["plot_title"].setText(_single_line_text(plot_label, width=46, fallback="القصة"))
+
         plot_text, plot_source = _pick_plot_text_with_source(data, self._item)
         plot_text = re.sub(r"^\[.*?\]\s*|^المصدر:\s*.*?\|\s*", "", plot_text)
         _MID_SITES = (
@@ -2294,17 +2195,19 @@ class ArabicPlayerDetail(Screen):
                 " ", plot_text, flags=re.I)
         plot_text = re.sub(r"  +", " ", plot_text).strip()
         my_log("Detail plot source: {} | len={}".format(plot_source, len(plot_text)))
+
         _pt = (plot_text or "").strip()
         if len(_pt) > 500:
             _pt = _pt[:500].rsplit(" ", 1)[0] + "…"
-        _ar_count = sum(1 for _c in _pt[:80] if "؀" <= _c <= "ۿ")
+        # FIX #2: use correct U+200F RIGHT-TO-LEFT MARK (not embedding chars U+202B/202C)
+        _ar_count = sum(1 for _c in _pt[:80] if "\u0600" <= _c <= "\u06ff")
         if _ar_count > int(len(_pt[:80]) * 0.3):
-            _pt = "‫" + _pt + "‬"
+            _pt = "\u200f" + _pt
         self["plot"].setText(_pt)
 
         self._servers = _sort_servers([s for s in data.get("servers", []) if s.get("url")])
         self._episodes = [e for e in data.get("items", []) if e.get("type") == "episode"]
-        
+
         my_log("Detail _onLoaded: servers={}, items={}".format(len(self._servers), len(self._episodes)))
 
         is_series = (
@@ -2342,11 +2245,9 @@ class ArabicPlayerDetail(Screen):
         fav_state = "محفوظ" if _is_favorite(self._item.get("url")) else "غير محفوظ"
         tmdb_state = "TMDb مفعل" if _tmdb_enabled() else "TMDb غير مفعل"
         return "{}  |  {}  |  {}".format(prefix, fav_state, tmdb_state)
-    
+
     def _refreshPoster(self):
-        """Re-show poster when screen becomes active again (after returning from player)."""
         if getattr(self, "_poster_loaded", False):
-            # Poster pixmap is still in widget — just ensure it's visible
             try:
                 self["poster"].show()
             except Exception:
@@ -2366,7 +2267,7 @@ class ArabicPlayerDetail(Screen):
         try:
             if not url: return
             if url.startswith("//"): url = "https:" + url
-            
+
             import urllib.request as urllib2
             try:
                 from urllib.parse import urlparse, quote, urlunparse
@@ -2375,7 +2276,7 @@ class ArabicPlayerDetail(Screen):
                 p[4] = quote(p[4])
                 url = urlunparse(p)
             except Exception: pass
-            
+
             cached = _get_cached_poster(url)
             if cached:
                 callInMainThread(self.picLoad.setPara, (self["poster"].instance.size().width(), self["poster"].instance.size().height(), 1, 1, 0, 1, "#000000"))
@@ -2400,7 +2301,7 @@ class ArabicPlayerDetail(Screen):
         idx = self["menu"].getSelectedIndex()
         if idx < 0:
             return
-        
+
         is_series = bool(
             self._data and (
                 self._data.get("type") in ("series", "show")
@@ -2408,7 +2309,7 @@ class ArabicPlayerDetail(Screen):
                 or self._episodes
             )
         )
-        
+
         if is_series:
             if idx >= len(self._episodes):
                 return
@@ -2454,7 +2355,7 @@ class ArabicPlayerDetail(Screen):
         try:
             from extractors.base import log
             log("Detail _bgExtract: START extracting for server={}".format(server.get("name", "Unknown")))
-            
+
             extract_fn = None
             try:
                 extractor = _get_extractor(self._site)
@@ -2489,15 +2390,16 @@ class ArabicPlayerDetail(Screen):
             {
                 "server_name": server.get("name", ""),
                 "quality": quality or "",
-                "last_stream_url": stream_url
-}
+                "last_stream_url": stream_url,
+            }
         )
         _upsert_library_item("history", history_entry, limit=120)
 
-        # Use raw single-line title — getText() returns wrapped text with \n
-        title = getattr(self, "_raw_title", None) or                 re.sub(r"\s+", " ", self["title"].getText()).strip()
-        _quality_tag = "[{}]".format(quality) if quality else ""
-            
+        # FIX #3: removed unused _quality_tag variable
+        # Use raw single-line title
+        title = getattr(self, "_raw_title", None) or \
+                re.sub(r"\s+", " ", self["title"].getText()).strip()
+
         try:
             raw_url = stream_url.strip()
             if "|" in raw_url:
@@ -2516,26 +2418,25 @@ class ArabicPlayerDetail(Screen):
             if is_embed_page and not is_media_url:
                 self["status"].setText("الرابط صفحة تشغيل وليس ملف فيديو — جرب سيرفر آخر")
                 return
-            
+
             headers = {"User-Agent": SAFE_UA}
-            
+
             if final_ref:
                 headers["Referer"] = final_ref
-            
+
             if old_params:
                 for p in old_params.split("&"):
                     if "=" in p:
                         k, v = p.split("=", 1)
                         if k not in headers: headers[k] = v
-            
+
             header_str = "&".join(["{}={}".format(k, v) for k, v in headers.items()])
             pure_url = main_url.split("|")[0].strip()
             url = pure_url + "#" + header_str if header_str else pure_url
-            
+
             _item_url = self._item.get("url", "")
             _saved_pos = _get_saved_position(_item_url)
             if _saved_pos > 30:
-                # Format resume time with hours if needed
                 if _saved_pos >= 3600:
                     _hours_r = _saved_pos // 3600
                     _mins_r = (_saved_pos % 3600) // 60
@@ -2545,7 +2446,7 @@ class ArabicPlayerDetail(Screen):
                     _mins_r = _saved_pos // 60
                     _secs_r = _saved_pos % 60
                     resume_text = "Resume from {}:{:02d}?".format(_mins_r, _secs_r)
-                
+
                 def _on_resume(_ans, _u=url, _t=title, _iu=_item_url, _sp=_saved_pos):
                     if not _ans:
                         _save_position(_iu, 0)
@@ -2558,7 +2459,6 @@ class ArabicPlayerDetail(Screen):
             else:
                 self["status"].setText("Opening player...")
                 _play(self.session, url, title, resume_pos=0, item_url=_item_url)
-            # Keep poster visible — avoids blank poster when returning from player
             self["status"].hide()
 
         except Exception as e:
@@ -2669,7 +2569,7 @@ def _restore_previous_service(session, previous_service):
         my_log("Restore previous service failed: {}".format(e))
 
 
-# ─── Simple Player Fallback (CANVAS-BASED PROGRESS BAR, FULLY WORKING) ───────
+# ─── Simple Player ────────────────────────────────────────────────────────────
 class ArabicPlayerSimplePlayer(Screen):
     skin = """
     <screen name="ArabicPlayerSimplePlayer" position="0,0" size="1920,1080" flags="wfNoBorder" backgroundColor="transparent">
@@ -2695,7 +2595,6 @@ class ArabicPlayerSimplePlayer(Screen):
         Screen.__init__(self, session)
         self["overlay_bg"]   = Label("")
         self["status"]       = Label("جاري التشغيل...")
-        # OSD widgets
         self["osd_shadow"]   = Label("")
         self["osd_titlebar"] = Label("")
         self["osd_title"]    = Label("")
@@ -2708,12 +2607,8 @@ class ArabicPlayerSimplePlayer(Screen):
         self["osd_keybar"]   = Label("")
         self["osd_keys"]     = Label("")
         self["osd_botline"]  = Label("")
-        # Truncate title to fit single line in 1180px widget at font-30
-        # Arabic chars ~25px, Latin ~16px. Cap at 34 chars for worst case Arabic.
         _raw = (title or "").strip()
-        # Separate any trailing quality tag like [1080p] before truncating
-        import re as _re
-        _qtag_m = _re.search(r'\s*(\[\d+p\])\s*$', _raw)
+        _qtag_m = re.search(r'\s*(\[\d+p\])\s*$', _raw)
         _qtag = _qtag_m.group(1) if _qtag_m else ""
         _bare = _raw[:_qtag_m.start()].strip() if _qtag_m else _raw
         if len(_bare) > 34:
@@ -2759,16 +2654,16 @@ class ArabicPlayerSimplePlayer(Screen):
                 "left":             lambda: self.__seek(-10),
                 "seekFwd":          lambda: self.__seek(+60),
                 "seekBack":         lambda: self.__seek(-60),
-                "green":            self.__onRestart
-},
+                "green":            self.__onRestart,
+            },
             -1
         )
         self._retry_timer = eTimer()
         self._retry_timer.callback.append(self.__onTimeout)
         eventmap = {
             iPlayableService.evTuneFailed: self.__onFailed,
-            iPlayableService.evEOF: self.__onFailed
-}
+            iPlayableService.evEOF: self.__onFailed,
+        }
         ev_video = getattr(iPlayableService, "evVideoSizeChanged", None)
         if ev_video is not None:
             eventmap[ev_video] = self.__onConfirmed
@@ -2786,11 +2681,9 @@ class ArabicPlayerSimplePlayer(Screen):
     ]
 
     def __initOSD(self):
-        # Hide all OSD widgets first
         for w in self._OSD_WIDGETS:
             try: self[w].hide()
             except: pass
-        # Text-based progress bar -- no canvas setup needed
 
     def __hideOSD(self):
         self._osd_visible = False
@@ -2853,7 +2746,6 @@ class ArabicPlayerSimplePlayer(Screen):
                 mt = (total % 3600) // 60
                 st = total % 60
                 self["osd_durtext"].setText("-{:02d}:{:02d}:{:02d}  {:02d}:{:02d}:{:02d}".format(hr, mr, sr, ht, mt, st))
-                # Unicode text-based progress bar (works on HiSilicon during video)
                 BAR_W = 96
                 filled = max(0, min(BAR_W, int(pct * BAR_W)))
                 bar = u"█" * filled + u"░" * (BAR_W - filled)
@@ -2913,7 +2805,6 @@ class ArabicPlayerSimplePlayer(Screen):
             self._force_confirmation_timer.stop()
         except: pass
         my_log("Play confirmed: {}".format(self._candidate_label))
-        # Start tracker at 0 — display is honest until seek is confirmed
         _start_pos_tracker(self.session, self._item_url, start_pos=0)
         if self._resume_pos > 30:
             self._seek_retry_count = 0
@@ -2922,7 +2813,6 @@ class ArabicPlayerSimplePlayer(Screen):
         self["status"].setText(u"▶ Playing")
         self._total_secs = 0
         self.__showOSD(True)
-        # (no canvas to show -- text bar updates automatically)
 
     def __togglePause(self):
         try:
@@ -2990,9 +2880,7 @@ class ArabicPlayerSimplePlayer(Screen):
             my_log("seek error: {}".format(e))
 
     def __onRestart(self):
-        """Restart stream and re-seek to last saved position."""
         my_log("Restart+Resume requested by green button")
-        # Save current position before restart so resume can pick it up
         if self._item_url:
             try:
                 if self._paused:
@@ -3087,7 +2975,6 @@ class ArabicPlayerSimplePlayer(Screen):
             svc = self.session.nav.getCurrentService()
             seek = svc and svc.seek()
             if not seek:
-                # Stream not ready yet — retry if attempts remain
                 self._seek_retry_count += 1
                 if self._seek_retry_count <= 3:
                     my_log("doSeek: no seek interface, retry {}/3 in 4s".format(self._seek_retry_count))
@@ -3096,12 +2983,10 @@ class ArabicPlayerSimplePlayer(Screen):
                     my_log("doSeek: giving up after 3 retries")
                 return
 
-            # Fire the seek — do NOT update tracker yet; __verifySeek will do that
             seek.seekTo(self._resume_pos * 90000)
             my_log("Resume seekTo: {}s (attempt {})".format(self._resume_pos, self._seek_retry_count + 1))
             self._total_secs = 0
 
-            # Schedule verification 4s later
             self._seek_verify_timer.start(4000, True)
 
             if self._osd_visible:
@@ -3113,7 +2998,6 @@ class ArabicPlayerSimplePlayer(Screen):
                 self._seek_timer.start(4000, True)
 
     def __verifySeek(self):
-        """Verify seek landed; use getPlayPosition if available, else double-tap."""
         if not self._resume_pos or self._resume_pos <= 30:
             return
         global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS, _GLOBAL_LAST_SEEK_TARGET
@@ -3122,7 +3006,6 @@ class ArabicPlayerSimplePlayer(Screen):
             seek = svc and svc.seek()
             actual_pos = -1
 
-            # Try to read actual position (unreliable on HiSilicon but worth trying)
             if seek:
                 try:
                     r = seek.getPlayPosition()
@@ -3132,9 +3015,7 @@ class ArabicPlayerSimplePlayer(Screen):
                     pass
 
             if actual_pos >= 0:
-                # We got a real reading
                 if actual_pos >= max(0, self._resume_pos - 60):
-                    # Seek worked — update tracker to actual position
                     _GLOBAL_PLAY_START_POS = actual_pos
                     _GLOBAL_PLAY_START_WALL = time.time()
                     _GLOBAL_LAST_SEEK_TARGET = actual_pos
@@ -3143,7 +3024,6 @@ class ArabicPlayerSimplePlayer(Screen):
                     my_log("verifySeek OK via PTS: actual={}s target={}s".format(
                         actual_pos, self._resume_pos))
                 else:
-                    # Seek ignored — retry with double-tap
                     if seek and self._seek_retry_count <= 3:
                         self._seek_retry_count += 1
                         seek.seekTo(self._resume_pos * 90000)
@@ -3151,20 +3031,15 @@ class ArabicPlayerSimplePlayer(Screen):
                             self._seek_retry_count, actual_pos, self._resume_pos))
                         self._seek_verify_timer.start(3000, True)
                     else:
-                        # Give up — update tracker to resume_pos so display is useful
                         _GLOBAL_PLAY_START_POS = max(0, self._resume_pos - 2)
                         _GLOBAL_PLAY_START_WALL = time.time()
                         my_log("verifySeek giving up, setting display to target {}s".format(
                             self._resume_pos))
             else:
-                # getPlayPosition not available (HiSilicon) — use double-tap heuristic
                 if self._seek_retry_count <= 2:
-                    # Fire another seekTo (double-tap) and update tracker optimistically
                     if seek:
                         seek.seekTo(self._resume_pos * 90000)
                     self._seek_retry_count += 1
-                    # Update tracker — if seek worked, display will be correct;
-                    # if not, user sees the right target time and can press >> once
                     _GLOBAL_PLAY_START_POS = max(0, self._resume_pos - 2)
                     _GLOBAL_PLAY_START_WALL = time.time()
                     _GLOBAL_LAST_SEEK_TARGET = self._resume_pos
@@ -3174,7 +3049,6 @@ class ArabicPlayerSimplePlayer(Screen):
                         self._seek_retry_count, self._resume_pos))
                     self._seek_verify_timer.start(3000, True)
                 else:
-                    # Final attempt done — tracker already set, user can >> if needed
                     my_log("verifySeek: max retries reached, target={}s".format(self._resume_pos))
         except Exception as e:
             my_log("verifySeek error: {}".format(e))
@@ -3186,7 +3060,7 @@ class ArabicPlayerSimplePlayer(Screen):
         _restore_previous_service(self.session, self.previous_service)
 
 
-# ─── Global play function (DO NOT INDENT INSIDE CLASS) ────────────────────────
+# ─── Global play function ─────────────────────────────────────────────────────
 def _play(session, url, title, resume_pos=0, item_url=""):
     try:
         svc_url = str(url).strip()
@@ -3233,10 +3107,10 @@ class ArabicPlayerSplash(Screen):
         self["splash_pic"] = Pixmap()
         self._timer = eTimer()
         self._timer.callback.append(self._onFinish)
-        
+
         self.picLoad = ePicLoad()
         self.picLoad.PictureData.get().append(self._paintSplash)
-        
+
         self.onLayoutFinish.append(self._start)
 
     def _start(self):

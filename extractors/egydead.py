@@ -33,7 +33,7 @@ VIDTUBE_QUALITY_LABELS = {
     "l": "360p",
     "x": "1080p",
 }
-VIDTUBE_QUALITY_ORDER = ("h", "n", "l", "x")
+# FIX: removed unused VIDTUBE_QUALITY_ORDER constant
 FORCE_TOPCINEMA_API_FIRST = True
 DISABLE_VIDKING_WHEN_TOPCINEMA_EXISTS = True
 
@@ -419,8 +419,6 @@ def _extract_player_src(html):
     return m.group(1).strip()
 
 
-
-
 def _extract_player_sources(html):
     out = []
     seen = set()
@@ -447,6 +445,7 @@ def _extract_player_sources(html):
                 out.append(u)
                 seen.add(u)
     return out
+
 
 def _vidtube_quality_servers(embed_url):
     html, _ = fetch(embed_url, referer="https://topcinema.fan/")
@@ -484,15 +483,15 @@ def _vidtube_quality_servers(embed_url):
             else:
                 qmatch = re.search(r'(1080|720|480|360)', media_url)
                 if qmatch:
-                    q = {"1080":"x", "720":"h", "480":"n", "360":"l"}.get(qmatch.group(1), "")
+                    q = {"1080": "x", "720": "h", "480": "n", "360": "l"}.get(qmatch.group(1), "")
             _store(q, media_url)
 
         for label, media_url in re.findall(r'"label"\s*:\s*"?(1080p|720p|480p|360p)"?\s*,\s*"file"\s*:\s*"([^"]+)"', text, re.I):
-            code = {"1080p":"x", "720p":"h", "480p":"n", "360p":"l"}.get(label.lower(), "")
+            code = {"1080p": "x", "720p": "h", "480p": "n", "360p": "l"}.get(label.lower(), "")
             _store(code, media_url)
 
         for media_url, label in re.findall(r'"(?:file|src)"\s*:\s*"([^"]+)"[^}]{0,120}"(?:label|res|quality)"\s*:\s*"?(1080p|720p|480p|360p)"?', text, re.I | re.S):
-            code = {"1080p":"x", "720p":"h", "480p":"n", "360p":"l"}.get(label.lower(), "")
+            code = {"1080p": "x", "720p": "h", "480p": "n", "360p": "l"}.get(label.lower(), "")
             _store(code, media_url)
 
     servers = []
@@ -506,6 +505,7 @@ def _vidtube_quality_servers(embed_url):
             "type": "direct",
         })
     return servers
+
 
 def _server_candidates(content_type, tmdb_id, season=None, episode=None):
     if content_type == "movie":
@@ -604,7 +604,6 @@ def _topcinema_fallback_servers(content_type, titles, year="", season=None, epis
                 surl = (srv.get("url") or "")
                 low_name = sname.lower()
 
-                # أولًا: متعدد الجودات / VidTube
                 if ("vidtube" in low_name) or (u"متعدد الجودات" in sname) or ("multiple" in low_name):
                     iframe_url = _extract_iframe_from_server(surl)
                     log("EgyDead TopCinema iframe_url={}".format(iframe_url))
@@ -627,7 +626,6 @@ def _topcinema_fallback_servers(content_type, titles, year="", season=None, epis
                             _push("VidTube", iframe_url)
                             return out
 
-                # fallback لباقي السيرفرات
                 try:
                     resolved = topmod.extract_stream(surl)
                 except Exception as exc:
@@ -671,6 +669,7 @@ def _topcinema_fallback_servers(content_type, titles, year="", season=None, epis
 
     return out
 
+
 def _vidking_resolve(embed_url):
     embed_url = (embed_url or "").strip()
     if not embed_url:
@@ -686,7 +685,6 @@ def _vidking_resolve(embed_url):
 
     texts = [html]
 
-    # packed/eval blocks
     for block in _extract_packer_blocks(html):
         try:
             dec = decode_packer(block)
@@ -695,7 +693,6 @@ def _vidking_resolve(embed_url):
         if dec:
             texts.append(dec)
 
-    # atob("...")
     for b64 in re.findall(r'atob\(["\']([A-Za-z0-9+/=]{40,})["\']\)', html, re.I):
         try:
             dec = base64.b64decode(b64).decode("utf-8", "ignore")
@@ -704,7 +701,6 @@ def _vidking_resolve(embed_url):
         if dec:
             texts.append(dec)
 
-    # obvious base64-ish strings inside quotes
     for b64 in re.findall(r'["\']([A-Za-z0-9+/=]{120,})["\']', html):
         try:
             dec = base64.b64decode(b64).decode("utf-8", "ignore")
@@ -750,7 +746,6 @@ def _vidking_resolve(embed_url):
             for u in re.findall(pat, txt, re.I | re.S):
                 _add(u)
 
-    # iframes inside VidKing page: fetch nested one more step
     nested = [u for u in found if "vidking.net/embed/" not in u.lower() and ("/embed" in u.lower() or "player" in u.lower())]
     for iframe_url in nested[:3]:
         try:
@@ -771,11 +766,11 @@ def _vidking_resolve(embed_url):
         log("EgyDead VidKing resolved: {}".format(media_url[:160]))
         return final, None, _get_base()
 
-    # log a short fingerprint to help diagnose this specific page shape
     sample = re.sub(r"\s+", " ", html[:400]).strip()
     log("EgyDead VidKing unresolved sample: {}".format(sample[:220]))
     log("EgyDead VidKing fallback to base resolver: {}".format(embed_url))
     return embed_url, None, _get_base()
+
 
 def _build_servers(content_type, tmdb_id, titles, year="", season=None, episode=None, watch_html=""):
     servers = []
@@ -795,7 +790,6 @@ def _build_servers(content_type, tmdb_id, titles, year="", season=None, episode=
         if top_iframe.startswith("//"):
             top_iframe = "https:" + top_iframe
 
-    # 1) حارس صريح: لو الـ API رجعت لينك صالح، ما ترجعش لـ VidKing بعدها
     if top_iframe:
         log("EgyDead top_iframe(api)={}".format(top_iframe))
         low = top_iframe.lower()
@@ -818,7 +812,6 @@ def _build_servers(content_type, tmdb_id, titles, year="", season=None, episode=
                 log("EgyDead servers(from api direct): {}".format(repr([s.get("name") for s in servers])))
                 return servers
 
-    # 2) fallback TopCinema module only when API missing/empty
     if not servers and not top_iframe:
         try:
             tc_servers = _topcinema_fallback_servers(content_type, titles, year, season, episode)
@@ -833,12 +826,10 @@ def _build_servers(content_type, tmdb_id, titles, year="", season=None, episode=
             log("EgyDead servers(from topcinema fallback): {}".format(repr([s.get("name") for s in servers])))
             return servers
 
-    # 3) لو عندنا top_iframe لكنه طلع غير صالح للجودات، ممنوع VidKing لو الخيار مفعّل
     if top_iframe and DISABLE_VIDKING_WHEN_TOPCINEMA_EXISTS:
         log("EgyDead guard: top_iframe exists, skipping watch/page vidking fallback")
         return servers
 
-    # 4) scan watch page only if no TopCinema result at all
     if not watch_html:
         try:
             watch_html, _ = fetch(_watch_url(content_type, tmdb_id, season, episode))
@@ -872,7 +863,6 @@ def _build_servers(content_type, tmdb_id, titles, year="", season=None, episode=
         log("EgyDead servers(from watch non-vidking): {}".format(repr([s.get("name") for s in servers])))
         return servers
 
-    # 5) generic candidates; postpone vidking to final fallback
     try:
         candidates = _server_candidates(content_type, tmdb_id, season, episode)
     except Exception:
@@ -903,6 +893,7 @@ def _build_servers(content_type, tmdb_id, titles, year="", season=None, episode=
 
     log("EgyDead servers(final): {}".format(repr([s.get("name") for s in servers])))
     return servers
+
 
 def _episode_title(show_title, season, episode, ep_name):
     bits = ["الموسم {0}".format(season), "الحلقة {0}".format(episode)]
@@ -1013,6 +1004,7 @@ def _append_next_page(items, url, current_page, total_pages=None, has_more=None)
         })
     return items
 
+
 def get_categories(mtype="movie"):
     base = _get_base().rstrip("/")
     if mtype == "movie":
@@ -1060,7 +1052,6 @@ def get_category_items(url, page=1):
                 has_more = None
 
             if has_more is None and items:
-                # fallback heuristic لو الـ API ما رجعش total_pages
                 has_more = len(items) >= 18
 
             return _append_next_page(items, url, current_page, total_pages=total_pages, has_more=has_more)
@@ -1102,7 +1093,6 @@ def get_category_items(url, page=1):
         has_more = None
 
     if has_more is None:
-        # لو مفيش pagination صريحة، جرّب من وجود لينك next أو حجم الصفحة
         if re.search(r'href=["\'][^"\']*[\?&]page={0}["\']'.format(current_page + 1), html, re.I):
             has_more = True
         elif items:
@@ -1111,6 +1101,7 @@ def get_category_items(url, page=1):
             has_more = False
 
     return _append_next_page(items, url, current_page, total_pages=total_pages, has_more=has_more)
+
 
 def search(query, page=1):
     base = _get_base().rstrip("/")
@@ -1171,6 +1162,7 @@ def search(query, page=1):
             "_action": "category"
         })
     return items
+
 
 def get_page(url, m_type="movie"):
     html, final_url = fetch(url)
@@ -1251,6 +1243,7 @@ def get_page(url, m_type="movie"):
         result["items"] = _season_items(tmdb_id, details, props)
     return result
 
+
 def extract_stream(url):
     low = (url or "").lower()
     if "vidking.net/embed/" in low or "viking" in low:
@@ -1262,4 +1255,3 @@ def extract_stream(url):
 
     from .base import extract_stream as base_extract_stream
     return base_extract_stream(url)
-

@@ -7,10 +7,10 @@ Hosts supported: Streamtape, Doodstream, Vidbom, Upstream, Govid, Uqload, Mixdro
 import re
 import json
 import time
-import random  # FIX: moved import to top
-import urllib.request
+import random
+# FIX: removed duplicate standalone "import urllib.request" — only the from-import below is needed
 from urllib.request import Request, urlopen, build_opener, HTTPCookieProcessor, HTTPSHandler
-from urllib.parse import urljoin, urlparse, unquote, urlencode  # FIX: export urljoin
+from urllib.parse import urljoin, urlparse, unquote, urlencode
 from urllib.error import URLError, HTTPError
 import http.cookiejar as cookiejar
 import ssl
@@ -46,10 +46,9 @@ def _get_opener():
     global _opener
     if _opener:
         return _opener
-    
+
     cj = cookiejar.CookieJar()
-    
-    # SSL context to ignore verification (required for many Arabic streaming sites)
+
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -58,15 +57,14 @@ def _get_opener():
         ctx = ssl._create_unverified_context()
 
     _opener = build_opener(
-        HTTPCookieProcessor(cj), 
+        HTTPCookieProcessor(cj),
         HTTPSHandler(context=ctx)
     )
-    
+
     return _opener
 
 
 def _decode_response_body(raw, info):
-    # Handle Compression
     ce = info.get('Content-Encoding', '').lower()
     if 'gzip' in ce:
         raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
@@ -78,7 +76,6 @@ def _decode_response_body(raw, info):
     elif 'br' in ce and brotli is not None:
         raw = brotli.decompress(raw)
 
-    # Handle Encoding
     charset = 'utf-8'
     ctype = info.get('Content-Type', '').lower()
     if 'charset=' in ctype:
@@ -121,13 +118,13 @@ def fetch(url, referer=None, extra_headers=None, post_data=None):
         }
         if any(x in url.lower() for x in ["ajax", "get__watch", "api/"]):
             headers.update({
-                "X-Requested-With": "XMLHttpRequest", 
-                "Accept": "application/json, text/javascript, */*; q=0.01", 
-                "Sec-Fetch-Dest": "empty", 
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Sec-Fetch-Dest": "empty",
                 "Sec-Fetch-Mode": "cors"
             })
         if extra_headers: headers.update(extra_headers)
-        
+
         data = post_data
         if data and isinstance(data, dict):
             data = urlencode(data).encode("utf-8")
@@ -141,13 +138,12 @@ def fetch(url, referer=None, extra_headers=None, post_data=None):
             raw = resp.read()
             final_url = resp.geturl()
             info = resp.info()
-            
-            # ACE Redirection Check
+
             if "alliance4creativity.com" in final_url.lower() or "watch-it-legally" in final_url.lower():
                 log("!!! ALERT: ACE Redirect detected for {} !!!".format(url))
                 return None, final_url
             html = _decode_response_body(raw, info)
-            
+
             log("Fetch Success: {} ({} bytes)".format(final_url, len(html)))
             return html, final_url
     except HTTPError as e:
@@ -161,7 +157,7 @@ def fetch(url, referer=None, extra_headers=None, post_data=None):
     except URLError as e:
         log("Fetch URLError: {} -> {}".format(url, e))
         global _opener
-        _opener = None  # rebuild SSL context on next request
+        _opener = None
         return None, url
     except Exception as e:
         log("Fetch Error: {} -> {}".format(url, e))
@@ -328,7 +324,7 @@ def decode_packer(packed):
 
         a, c = int(a), int(c)
         k = k.split("|")
-        
+
         def e(c):
             result = ""
             while True:
@@ -337,11 +333,11 @@ def decode_packer(packed):
                 if c == 0:
                     break
             return result
-        
+
         d = {}
         for i in range(c):
             d[e(i)] = k[i] or e(i)
-            
+
         return re.sub(r'\b(\w+)\b', lambda x: d.get(x.group(1), x.group(1)), p)
     except:
         return ""
@@ -368,7 +364,6 @@ def resolve_streamtape(url):
         html, _ = fetch(url)
         if not html:
             return None
-        # Streamtape obfuscates the link in two parts
         m = re.search(r"robotlink\)\.innerHTML = '([^']+)'\s*\+\s*'([^']+)'", html)
         if m:
             link = m.group(1) + m.group(2)
@@ -376,7 +371,6 @@ def resolve_streamtape(url):
             if not link.startswith("http"):
                 link = "https:" + link
             return link
-        # Alternative pattern
         m = re.search(r'(/get_video\?[^"\'&\s]+)', html)
         if m:
             return "https://streamtape.com" + m.group(1)
@@ -388,9 +382,7 @@ def resolve_streamtape(url):
 def resolve_doodstream(url):
     """Extract from dood.* / doodstream / dsvplay and variants"""
     try:
-        # Normalize dood domains to dood.re
         dood_base = "https://dood.re"
-        # Try multiple domain patterns
         for pat, domain in [
             (r'dood\.[a-z]+', 'dood.re'),
             (r'dsvplay\.[a-z]+', 'dood.re'),
@@ -420,7 +412,7 @@ def resolve_doodstream(url):
         if not token_html:
             return None
         chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-        rand = "".join(random.choice(chars) for _ in range(10))  # FIX: use top-level random
+        rand = "".join(random.choice(chars) for _ in range(10))
         return token_html.strip() + rand + "?token=" + pass_path.split("/")[-1] + "&expiry=" + str(int(time.time() * 1000))
     except Exception:
         pass
@@ -487,14 +479,12 @@ def resolve_mixdrop(url):
         html, _ = fetch(url)
         if not html:
             return None
-        
-        # 1. Try plain text first
+
         m = re.search(r'MDCore\.wurl\s*=\s*"([^"]+)"', html)
         if m:
             link = m.group(1)
             return ("https:" + link) if link.startswith("//") else link
-            
-        # 2. Try Packer
+
         evals = re.findall(r"eval\(function\(p,a,c,k,e,d\).*?}\(.*?\)\)", html, re.S)
         for ev in evals:
             dec = decode_packer(ev)
@@ -513,13 +503,11 @@ def resolve_voe(url):
         html, final = fetch(url, referer="https://x7k9f.sbs/")
         if not html:
             return None
-        # Pattern 1: hls key in JS object
         for pat in [r"'hls'\s*:\s*'([^']+)'", r'"hls"\s*:\s*"([^"]+)"',
                     r"sources\s*=\s*\[\s*\{[^}]*file\s*:\s*'([^']+)'"]:
             m = re.search(pat, html)
             if m:
                 return m.group(1)
-        # Pattern 2: atob encoded
         import base64
         for enc in re.finditer(r"atob\(['\"]([A-Za-z0-9+/=]+)['\"]\)", html):
             try:
@@ -540,10 +528,8 @@ def resolve_streamruby(url):
     try:
         html, _ = fetch(url)
         if not html: return None
-        # Pattern 1: Plain text
         m = find_m3u8(html) or find_mp4(html)
         if m: return m
-        # Pattern 2: Packed JS
         evals = re.findall(r"eval\(function\(p,a,c,k,e,d\).*?}\(.*?\)\)", html, re.S)
         for ev in evals:
             dec = decode_packer(ev)
@@ -609,6 +595,7 @@ HOST_RESOLVERS = {
     "masukestin": resolve_hgcloud,
     "vidtube":    resolve_vidtube,
 }
+
 def resolve_generic_embed(url):
     """Generic resolver for embed hosts — tries m3u8/mp4 directly then iframes"""
     try:
@@ -618,7 +605,6 @@ def resolve_generic_embed(url):
         result = find_m3u8(html) or find_mp4(html)
         if result:
             return result
-        # Try Packer-obfuscated JS
         evals = re.findall(r"eval\(function\(p,a,c,k,e,d\).*?}\(.*?\)\)", html, re.S)
         for ev in evals:
             dec = decode_packer(ev)
@@ -626,7 +612,6 @@ def resolve_generic_embed(url):
                 result = find_m3u8(dec) or find_mp4(dec)
                 if result:
                     return result
-        # Follow iframes one level
         iframes = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I)
         for ifr in iframes:
             if ifr.startswith("//"): ifr = "https:" + ifr
@@ -639,8 +624,6 @@ def resolve_generic_embed(url):
         pass
     return None
 
-
-# ─── Host Dispatcher ─────────────────────────────────────────────────────────
 
 # ─── Multi-Provider Resolvers (TMDB Based) ──────────────────────────────────
 
@@ -723,7 +706,6 @@ def _get_stream_autoembed(tmdb_id, m_type, season=None, episode=None):
     return find_m3u8(html) or find_mp4(html)
 
 def _get_stream_vidsrc(tmdb_id, m_type, season=None, episode=None):
-    """FIX: Added resolver for vidsrc:// scheme"""
     if m_type == "movie":
         url = "https://vidsrc.me/embed/movie/{}".format(tmdb_id)
     else:
@@ -732,7 +714,6 @@ def _get_stream_vidsrc(tmdb_id, m_type, season=None, episode=None):
     html, _ = fetch(url, referer="https://vidsrc.me/")
     if not html:
         return None
-    # Try to find iframe redirect or direct source
     m = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I)
     if m:
         iframe_url = m.group(1)
@@ -748,7 +729,7 @@ _PREMIUM_METHODS = {
     "superembed":  _get_stream_superembed,
     "2embed":      _get_stream_2embed,
     "autoembed":   _get_stream_autoembed,
-    "vidsrc":      _get_stream_vidsrc,   # FIX: added vidsrc handler
+    "vidsrc":      _get_stream_vidsrc,
 }
 
 def get_premium_servers(m_type, tmdb_id, season=None, episode=None):
@@ -757,16 +738,15 @@ def get_premium_servers(m_type, tmdb_id, season=None, episode=None):
     suffix = ""
     if season and episode:
         suffix = ":{}:{}".format(season, episode)
-    
+
     res.append({"name": "Premium: AutoEmbed 🚀",  "url": "autoembed://{}:{}{}".format(m_type, tmdb_id, suffix)})
     res.append({"name": "Premium: VidSrc 🔥",     "url": "vidsrc://{}:{}{}".format(m_type, tmdb_id, suffix)})
     return res
 
-# ─── Updated Dispatcher ──────────────────────────────────────────────────────
+# ─── Host Dispatcher ─────────────────────────────────────────────────────────
 
 def resolve_host(url, referer=None):
     """Auto-detect host and resolve to direct stream URL"""
-    # 1. Custom URI Schemes
     m = re.match(r'(\w+)://(movie|series|tv|episode):(\d+)(?::(\d+):(\d+))?', url)
     if m:
         method_name, m_type, tmdb_id, season, episode = m.groups()
@@ -781,7 +761,6 @@ def resolve_host(url, referer=None):
                 except: pass
             return None
 
-    # 2. Domain Dispatch
     domain = urlparse(url).netloc.lower()
     log("Resolving host: {} (URL: {})".format(domain, url))
     if "streamruby" in domain:
@@ -793,31 +772,29 @@ def resolve_host(url, referer=None):
         if key in domain:
             log("Using resolver: {}".format(key))
             return resolver(url)
-    
-    # Generic fallback
+
     log("Using generic fallback for: {}".format(domain))
     html, final_url = fetch(url, referer=referer or url)
-    if not html: 
+    if not html:
         log("Generic fallback failed: No HTML")
         return None
     res = find_m3u8(html) or find_mp4(html) or find_packed_links(html)
-    if res: 
+    if res:
         log("Generic fallback success: {}".format(res))
         return res
-    
+
     evals = re.findall(r"eval\(function\(p,a,c,k,e,d\).*?}\(.*?\)\)", html, re.S)
     log("Found {} packed scripts".format(len(evals)))
     for ev in evals:
         dec = decode_packer(ev)
         if dec:
             r = find_m3u8(dec) or find_mp4(dec)
-            if r: 
+            if r:
                 log("Packer success: {}".format(r))
                 return r
-            
+
     log("All resolution attempts failed for: {}".format(url))
     return None
-
 
 
 def resolve_iframe_chain(url, referer=None, depth=0, max_depth=6):
@@ -826,17 +803,15 @@ def resolve_iframe_chain(url, referer=None, depth=0, max_depth=6):
     Supports src, data-src, data-url attributes.
     """
     if depth > max_depth: return None, ""
-    
+
     html, final_url = fetch(url, referer=referer)
     if not html: return None, ""
-    
+
     domain = urlparse(final_url or url).netloc.lower()
-    
-    # 1. Check for stream in current HTML
+
     stream = find_m3u8(html) or find_mp4(html) or find_packed_links(html)
     if stream: return stream, domain
-    
-    # 2. Look for iframes (src, data-src, data-url)
+
     iframes = re.findall(r'<(?:iframe|embed|frame)[^>]+(?:src|data-src|data-url)=["\']([^"\']+)["\']', html, re.I)
     for iframe in iframes:
         if iframe.startswith("//"): iframe = "https:" + iframe
@@ -846,14 +821,13 @@ def resolve_iframe_chain(url, referer=None, depth=0, max_depth=6):
                 iframe = "{}://{}{}".format(p.scheme, p.netloc, iframe)
             else:
                 continue
-        
-        # Avoid common ad iframes or social trackers
+
         if any(x in iframe.lower() for x in ["facebook", "twitter", "googletag", "ads", "analytics", "doubleclick"]):
             continue
-            
+
         res, h = resolve_iframe_chain(iframe, referer=url, depth=depth+1, max_depth=max_depth)
         if res: return res, h
-        
+
     return None, ""
 
 
@@ -884,21 +858,19 @@ def extract_stream(url):
         q = "1080p" if "1080" in lower_main_url else ("720p" if "720" in lower_main_url else "HD")
         return raw_url, q, referer
 
-    # 1. Resolve host with redirection tracking
     _, final_referer = fetch(main_url, referer=piped_headers.get("Referer"))
-    if not final_referer: # Check if fetch itself failed to get a final URL
-        return None, "", main_url # Return original URL as referer if no final_referer
-        
+    if not final_referer:
+        return None, "", main_url
+
     stream = resolve_host(main_url, referer=piped_headers.get("Referer"))
     if not stream:
         log("Initial resolve_host failed, trying resolve_iframe_chain")
-        # Try recursive chain if domain dispatch failed
         stream, h = resolve_iframe_chain(main_url, referer=piped_headers.get("Referer"), depth=0)
-        
+
     if stream:
         log("Extraction SUCCESS: {}".format(stream))
         q = "1080p" if "1080" in stream else ("720p" if "720" in stream else "HD")
         return stream, q, final_referer
-    
+
     log("Extraction FINAL FAILURE for: {}".format(main_url))
     return None, "", final_referer
