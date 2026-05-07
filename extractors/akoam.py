@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 import re
-from urllib.parse import urljoin  # FIX: use standard library, not from base
-from .base import fetch
+from urllib.parse import urljoin
+from .base import fetch, log
 
-MAIN_URL = "https://ak.sv/"
+# Updated to work with both akwams.com.co and akwam.com.co
+# (with or without trailing slash)
+MAIN_URL = "https://akwam.com.co/one/"
 
 
 def _clean_title(title):
@@ -16,190 +18,315 @@ def _clean_title(title):
     )
 
 
-def _extract_boxes(html):
-    pattern = (
-        r'<div class="(?:entry-box|episode-box)[^>]*>.*?'
-        r'<a href="([^"]+)"[^>]*>.*?'
-        r'<img[^>]+(?:data-src|src)="([^"]+)"[^>]*alt="([^"]+)"'
-    )
-    return re.findall(pattern, html or "", re.S)
-
-
-def _normalize_watch_url(link):
-    link = (link or "").replace("&amp;", "&").strip()
-    if link.startswith("http://go.ak.sv/"):
-        link = "https://" + link[len("http://"):]
-    if link.startswith("https://go.ak.sv/watch/"):
-        parts = link.rstrip("/").split("/")
-        if parts and parts[-1].isdigit():
-            return link
-    return link
-
-
-def _resolve_go_watch_url(link):
-    link = _normalize_watch_url(link)
-
-    # Case 1: it's already a direct ak.sv/watch URL
-    if link.startswith("https://ak.sv/watch/") and not link.startswith("https://go.ak.sv/"):
-        return link
-
-    # Case 2: it's a go.ak.sv shortener URL — follow the redirect page to get real URL
-    html, _ = fetch(link, referer=MAIN_URL)
-    if not html:
-        return link
-
-    # Look for the real ak.sv/watch URL inside the redirect page
-    resolved = re.search(r'https://ak\.sv/watch/[^\s\'"<>]+', html, re.I)
-    if resolved:
-        return resolved.group(0).replace("&amp;", "&")
-    return link
-
-
-def _extract_watch_links(html):
-    links = []
+def _extract_items_from_homepage(html):
+    """
+    Extract movies/series/anime from the new akwam.com.co homepage structure.
+    Pattern matches: div with class="item" or similar, containing an <a> with poster image.
+    """
+    items = []
     seen = set()
+    
+    # Primary pattern for akwam.com.co
     patterns = [
-        r'href="(https?://(?:go\.)?ak\.sv/watch/[^"]+)"',
-        r'href="(https?://ak\.sv/watch/[^"]+)"',
-        r'href="(https?://ak\.sv/download/[^"]+)"',
+        # Format: <div class="item"> <a href="URL" class="movie"> <img data-src="POSTER" alt="TITLE">
+        r'<div class="item">\s*<a href="([^"]+)" class="movie">\s*<img[^>]+data-src="([^"]+)"[^>]+alt="([^"]+)"',
+        # Fallback: simpler pattern
+        r'<a href="(/[^"]+)" class="movie">\s*<img[^>]+(?:data-src|src)="([^"]+)"[^>]+alt="([^"]+)"',
+        # Another variant
+        r'<div[^>]*class="[^"]*item[^"]*"[^>]*>.*?<a href="([^"]+)".*?<img[^>]+(?:data-src|src)="([^"]+)"[^>]+alt="([^"]+)"',
     ]
+    
     for pattern in patterns:
-        for link in re.findall(pattern, html or "", re.I):
-            link = _resolve_go_watch_url(link)
-            if link in seen:
+        for match in re.findall(pattern, html or "", re.S):
+            link, img, title = match
+            if link in seen or not link.startswith("/"):
                 continue
             seen.add(link)
-            links.append(link)
-    return links
+            
+            # Determine type from URL or context
+            if "/series/" in link or "/مسلسل" in link or "series" in title.lower():
+                item_type = "series"
+            elif "/anime/" in link or "/انمي" in link:
+                item_type = "anime"
+            else:
+                item_type = "movie"
+            
+            # Build full URL
+            full_url = urljoin(MAIN_URL, link)
+            
+            items.append({
+                "title": _clean_title(title),
+                "url": full_url,
+                "poster": img,
+                "type": item_type,
+                "_action": "details",
+            })
+    
+    return items
 
 
 def get_categories():
+    """Return main category links (Movies, Series, Anime)"""
+    # The new site uses query parameters for filtering
     return [
-        {"title": "🎬 الأفلام", "url": urljoin(MAIN_URL, "movies"), "type": "category", "_action": "category"},
-        {"title": "📺 المسلسلات", "url": urljoin(MAIN_URL, "series"), "type": "category", "_action": "category"},
-        {"title": "🎭 العروض", "url": urljoin(MAIN_URL, "shows"), "type": "category", "_action": "category"},
+        {"title": "🎬 Movies",    "url": urljoin(MAIN_URL, "?filter=movies"), "type": "category", "_action": "category"},
+        {"title": "📺 TV Series", "url": urljoin(MAIN_URL, "?filter=series"), "type": "category", "_action": "category"},
+        {"title": "🍥 Anime",     "url": urljoin(MAIN_URL, "?filter=anime"),  "type": "category", "_action": "category"},
     ]
 
 
 def get_category_items(url):
-    html, _ = fetch(url)
+    """
+    Fetch items from a category page (movies, series, anime, or search results)
+    """
+    html, _ = fetch(url, referer=MAIN_URL)
     if not html:
         return []
 
-    items = []
-    seen = set()
-    for link, img, title in _extract_boxes(html):
-        if link in seen or "/category/" in link:
-            continue
-        seen.add(link)
-        item_type = "series" if "/series-" in link or "/series/" in link or "مسلسل" in title else "movie"
-        items.append(
-            {
-                "title": _clean_title(title),
-                "url": link,
-                "image": img,
-                "type": item_type,
-                "_action": "details",
-            }
-        )
-
-    next_page = re.search(r'href="([^"]+)"[^>]*rel="next"', html)
-    if next_page:
-        items.append(
-            {
-                "title": "➡️ الصفحة التالية",
-                "url": next_page.group(1).replace("&amp;", "&"),
-                "type": "category",
-                "_action": "category",
-            }
-        )
+    items = _extract_items_from_homepage(html)
+    seen_urls = {item["url"] for item in items}
+    
+    # Pagination - look for next page link
+    next_patterns = [
+        r'<a href="([^"]+)"[^>]*class="[^"]*next[^"]*"[^>]*>',
+        r'<link[^>]*rel=["\']next["\'][^>]*href=["\']([^"\']+)["\']',
+        r'<a[^>]*>\s*التالي\s*</a>\s*<a href="([^"]+)"',
+    ]
+    
+    for pattern in next_patterns:
+        next_match = re.search(pattern, html, re.I)
+        if next_match:
+            next_url = next_match.group(1).replace("&amp;", "&")
+            if not next_url.startswith("http"):
+                next_url = urljoin(MAIN_URL, next_url)
+            if next_url not in seen_urls:
+                items.append({
+                    "title": "➡️ Next Page",
+                    "url": next_url,
+                    "type": "category",
+                    "_action": "category",
+                })
+            break
+    
     return items
 
 
 def _quote_url(url):
-    import sys
-    if sys.version_info[0] == 3:
-        from urllib.parse import quote
-        return quote(url, safe=":/%?=&")
-    else:
-        from urllib import quote
-        u = url.encode("utf-8") if isinstance(url, type(u"")) else url
-        return quote(u, safe=":/%?=&")
+    from urllib.parse import quote
+    return quote(url, safe=":/%?=&")
+
 
 def get_page(url):
+    """
+    Extract details (title, poster, plot, episodes, servers) from a movie/series/episode page
+    """
     url = _quote_url(url)
-    html, final_url = fetch(url)
-    result = {"url": url, "title": "", "poster": "", "plot": "", "servers": [], "items": [], "type": "movie"}
-
+    html, final_url = fetch(url, referer=MAIN_URL)
+    
+    result = {
+        "url": url,
+        "title": "",
+        "poster": "",
+        "plot": "",
+        "servers": [],
+        "items": [],
+        "type": "movie",
+    }
+    
     if not html:
         return result
 
-    title_match = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.S | re.I)
-    if title_match:
-        result["title"] = _clean_title(title_match.group(1))
+    # Extract title
+    title_patterns = [
+        r'<h1[^>]*>(.*?)</h1>',
+        r'<div[^>]*class="[^"]*title[^"]*"[^>]*>(.*?)</div>',
+        r'<meta[^>]*property="og:title"[^>]*content="([^"]+)"',
+    ]
+    for pattern in title_patterns:
+        m = re.search(pattern, html, re.S | re.I)
+        if m:
+            result["title"] = _clean_title(m.group(1))
+            break
 
-    poster_match = re.search(r'<img[^>]+class="img-fluid"[^>]+src="([^"]+)"', html, re.I)
-    if poster_match:
-        result["poster"] = poster_match.group(1).replace("&amp;", "&")
+    # Extract poster
+    poster_patterns = [
+        r'<img[^>]+class="[^"]*img-fluid[^"]*"[^>]+src="([^"]+)"',
+        r'<meta[^>]*property="og:image"[^>]*content="([^"]+)"',
+        r'<div[^>]*class="[^"]*poster[^"]*"[^>]*>.*?<img[^>]+src="([^"]+)"',
+        r'<img[^>]+data-src="([^"]+)"[^>]+alt="[^"]*poster',
+    ]
+    for pattern in poster_patterns:
+        m = re.search(pattern, html, re.I)
+        if m:
+            result["poster"] = m.group(1).replace("&amp;", "&")
+            break
 
-    plot_match = re.search(r'<p[^>]+class="text-white[^>]*>(.*?)</p>', html, re.S | re.I)
-    if not plot_match:
-        plot_match = re.search(r'القصة\s*.*?<p[^>]*>(.*?)</p>', html, re.S | re.I)
-    if plot_match:
-        result["plot"] = _clean_title(plot_match.group(1))
+    # Extract plot/summary
+    plot_patterns = [
+        r'<p[^>]+class="[^"]*plot[^"]*"[^>]*>(.*?)</p>',
+        r'<div[^>]*class="[^"]*summary[^"]*"[^>]*>(.*?)</div>',
+        r'<div[^>]*class="[^"]*description[^"]*"[^>]*>(.*?)</div>',
+        r'القصة\s*:?\s*</?(?:strong|span|div)?[^>]*>\s*(.*?)(?:</|$)',
+    ]
+    for pattern in plot_patterns:
+        m = re.search(pattern, html, re.S | re.I)
+        if m:
+            result["plot"] = _clean_title(re.sub(r'<[^>]+>', '', m.group(1)))
+            break
 
-    is_series = ("/series/" in (final_url or url) or "مسلسل" in result["title"]) and "/episode/" not in (final_url or url)
+    # Check if this is a series page (has episodes)
+    is_series = (
+        "/series/" in (final_url or url) or
+        "/مسلسل" in result["title"] or
+        "مسلسل" in result["title"] or
+        ("الحلقة" in html and ("episode" in html.lower() or "حلقة" in html))
+    ) and "/episode/" not in (final_url or url)
 
     if is_series:
         result["type"] = "series"
         seen_eps = set()
-
+        
+        # Episode extraction patterns for akwam.com.co
         episode_patterns = [
-            r'<a[^>]+href=["\']([^"\']+/episode/[^"\']+)["\'][^>]*>(.*?)</a>',
-            r'<a[^>]+href=["\']([^"\']*episode[^"\']*)["\'][^>]*>(.*?)</a>',
+            # Pattern: <a href="/series/.../episode/1"> <div class="episode-number">1</div>
+            r'<a[^>]+href="([^"]+/(?:episode|حلقة)/[^"]+)"[^>]*>.*?(?:<div[^>]*class="[^"]*episode[^"]*"[^>]*>(.*?)</div>|<span[^>]*>(?:Episode|حلقة)\s*(\d+))',
+            # Simple pattern for episode links
+            r'<a[^>]+href="([^"]*episode[^"]*)"[^>]*>(.*?)</a>',
+            # Any link containing /episode/ or /حلقة/
+            r'href="([^"]*(?:/episode/|/حلقة/)[^"]*)"',
         ]
-
-        for ep_pat in episode_patterns:
-            html_eps = re.findall(ep_pat, html, re.S | re.I)
-            for ep_url, ep_title in html_eps:
+        
+        for pattern in episode_patterns:
+            for match in re.findall(pattern, html, re.S | re.I):
+                if isinstance(match, tuple):
+                    ep_url = match[0]
+                    ep_title = match[1] if len(match) > 1 else ""
+                else:
+                    ep_url = match
+                    ep_title = ""
+                
                 full_url = urljoin(final_url or url, ep_url).replace("&amp;", "&")
                 if full_url in seen_eps:
                     continue
                 seen_eps.add(full_url)
-
-                ep_title_clean = _clean_title(ep_title)
-                if not ep_title_clean:
-                    ep_title_clean = "حلقة {0}".format(len(result["items"]) + 1)
-
+                
+                if not ep_title or ep_title.strip() == "":
+                    ep_num = len(result["items"]) + 1
+                    ep_title = f"Episode {ep_num}"
+                else:
+                    ep_title = _clean_title(ep_title)
+                
                 result["items"].append({
-                    "title": ep_title_clean,
+                    "title": ep_title,
                     "url": full_url,
                     "type": "episode",
-                    "_action": "item"
+                    "_action": "details",
                 })
-
+        
+        # Sort episodes by number if possible
+        def extract_ep_num(item):
+            match = re.search(r'(\d+)', item["title"])
+            return int(match.group(1)) if match else 999
+        result["items"].sort(key=extract_ep_num)
+        
         return result
 
-    for index, link in enumerate(_extract_watch_links(html), 1):
-        label = "🌐 مشاهدة {}".format(index) if "/watch/" in link else "⬇️ تحميل {}".format(index)
-        result["servers"].append({"name": label, "url": link, "type": "direct"})
-
+    # For movies or episode pages, extract watch/download servers
+    watch_links = []
+    
+    # Find watch/download links
+    link_patterns = [
+        r'href="(https?://(?:go\.)?akwam(?:s)?\.com\.co/(?:watch|download|episode)/[^"]+)"',
+        r'href="(/watch/[^"]+)"',
+        r'href="(/download/[^"]+)"',
+        r'<a[^>]+class="[^"]*btn[^"]*watch[^"]*"[^>]+href="([^"]+)"',
+        r'<a[^>]+href="([^"]+)"[^>]*>(?:مشاهدة|تحميل|Watch|Download)',
+    ]
+    
+    for pattern in link_patterns:
+        for link in re.findall(pattern, html, re.I):
+            if link.startswith("/"):
+                link = urljoin(MAIN_URL, link)
+            link = link.replace("&amp;", "&").strip()
+            if link not in watch_links:
+                watch_links.append(link)
+    
+    # Build server entries
+    watch_count = 1
+    download_count = 1
+    for link in watch_links:
+        if "/watch/" in link or "/episode/" in link:
+            result["servers"].append({
+                "name": f"🎬 Watch {watch_count}",
+                "url": link,
+                "type": "direct"
+            })
+            watch_count += 1
+        elif "/download/" in link:
+            result["servers"].append({
+                "name": f"⬇️ Download {download_count}",
+                "url": link,
+                "type": "direct"
+            })
+            download_count += 1
+        else:
+            result["servers"].append({
+                "name": f"🌐 Server {len(result['servers']) + 1}",
+                "url": link,
+                "type": "direct"
+            })
+    
     return result
 
 
 def extract_stream(url):
-    # For ak.sv/watch pages, fetch the page directly and grab the source
-    if "ak.sv/watch/" in url or "akw.cam/watch/" in url or "akw-cdn" in url:
+    """
+    Extract direct video stream URL from a watch page.
+    Handles go.akwam shortener and extracts m3u8/mp4 sources.
+    """
+    url = (url or "").replace("&amp;", "&").strip()
+
+    # Resolve go.akwam.sv or go.akwams.com.co shortener
+    if "go.akwam" in url or "go.akwams" in url:
         html, final_url = fetch(url, referer=MAIN_URL)
         if html:
-            match = re.search(r'<source[^>]+src="([^"]+)"[^>]*type="video/mp4"', html, re.I)
-            if match:
-                return match.group(1).replace("&amp;", "&"), None, MAIN_URL
-            match = re.search(r'<source[^>]+src="([^"]+(?:m3u8|mp4)[^"]*)"', html, re.I)
-            if match:
-                return match.group(1).replace("&amp;", "&"), None, MAIN_URL
-            match = re.search(r'"file"\s*:\s*"([^"]+(?:m3u8|mp4)[^"]*)"', html, re.I)
-            if match:
-                return match.group(1).replace("\\u0026", "&").replace("&amp;", "&"), None, MAIN_URL
+            resolved = re.search(r'https?://akwam(?:s)?\.com\.co/(?:watch|episode)/[^\s\'"<>]+', html, re.I)
+            if resolved:
+                url = resolved.group(0).replace("&amp;", "&")
+            elif final_url and ("akwam" in final_url or "akwams" in final_url):
+                url = final_url
+
+    # Handle akwam watch pages
+    if "akwam.com.co/watch/" in url or "akwams.com.co/watch/" in url or \
+       "akwam.com.co/episode/" in url or "akwams.com.co/episode/" in url:
+        html, final_url = fetch(url, referer=MAIN_URL)
+        if html:
+            # Try multiple patterns to find video source
+            patterns = [
+                r'<source[^>]+src="([^"]+)"[^>]*type="video/mp4"',
+                r'<source[^>]+src="([^"]+(?:m3u8|mp4)[^"]*)"',
+                r'"file"\s*:\s*"([^"]+(?:m3u8|mp4)[^"]*)"',
+                r'"videoUrl"\s*:\s*"([^"]+)"',
+                r'data-video-url=["\']([^"\']+)["\']',
+                r'src:\s*["\']([^"\']+\.(?:m3u8|mp4))',
+                r'<video[^>]+src="([^"]+)"',
+                r'<iframe[^>]+src="([^"]+)"',
+            ]
+            
+            for pattern in patterns:
+                m = re.search(pattern, html, re.I)
+                if m:
+                    video_url = m.group(1).replace("\\u0026", "&").replace("&amp;", "&")
+                    # If it's an iframe, resolve it recursively
+                    if "iframe" in pattern or video_url.startswith("http") and "iframe" not in pattern.lower():
+                        # Could be an embedded player
+                        from .base import resolve_iframe_chain
+                        resolved_stream, _ = resolve_iframe_chain(video_url, referer=url)
+                        if resolved_stream:
+                            return resolved_stream, None, MAIN_URL
+                    if video_url.startswith("http") and (".m3u8" in video_url or ".mp4" in video_url):
+                        return video_url, None, MAIN_URL
+
+    # Fallback to base extractor which handles all major video hosts
     from .base import extract_stream as base_extract_stream
     return base_extract_stream(url)

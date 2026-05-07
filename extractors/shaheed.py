@@ -19,12 +19,12 @@ DOMAINS = [
     "https://shahieed4u.net/",
     "https://shaheeid4u.net/",
 ]
-
-VALID_HOST_MARKERS = ("shahid4u.guru", "shahieed4u.net", "shaheeid4u.net")
+VALID_HOST_MARKERS   = ("shahid4u.guru", "shahieed4u.net", "shaheeid4u.net")
 BLOCKED_HOST_MARKERS = ("alliance4creativity.com",)
-MAIN_URL = None
+MAIN_URL   = None
 _HOME_HTML = None
 _HOME_LAST_FETCH = 0
+
 
 def _host(url):
     try:
@@ -32,40 +32,45 @@ def _host(url):
     except Exception:
         return ""
 
+
 def _is_valid_site_url(url):
     host = _host(url)
     if not host:
         return False
-    if any(marker in host for marker in BLOCKED_HOST_MARKERS):
+    if any(m in host for m in BLOCKED_HOST_MARKERS):
         return False
-    return any(marker in host for marker in VALID_HOST_MARKERS)
+    return any(m in host for m in VALID_HOST_MARKERS)
+
 
 def _is_blocked_page(html, final_url=""):
-    text = (html or "").lower()
+    text  = (html or "").lower()
     final = (final_url or "").lower()
-    return (
-        not text
-        or "just a moment" in text
-        or "cf-chl" in text
-        or "alliance for creativity" in text
-        or any(marker in final for marker in BLOCKED_HOST_MARKERS)
-        or (final and not _is_valid_site_url(final))
-    )
+    if not text:
+        return True
+    if "just a moment" in text and "cf-chl" in text:
+        return True
+    if "alliance for creativity" in text:
+        return True
+    if any(m in final for m in BLOCKED_HOST_MARKERS):
+        return True
+    return False
+
 
 def _site_root(url):
     parts = urlparse(url)
     return "{}://{}/".format(parts.scheme or "https", parts.netloc)
+
 
 def _get_base(force_refresh=False):
     global MAIN_URL, _HOME_HTML, _HOME_LAST_FETCH
     if MAIN_URL and not force_refresh and (time.time() - _HOME_LAST_FETCH) < 21600:
         return MAIN_URL
     for domain in DOMAINS:
-        log("Shaheed: probing base {}".format(domain))
+        log("Shaheed: probing {}".format(domain))
         html, final_url = fetch(domain, referer=domain)
         final_url = final_url or domain
         if _is_blocked_page(html, final_url):
-            log("Shaheed: blocked base {}".format(final_url))
+            log("Shaheed: blocked {}".format(final_url))
             continue
         if html and ("shah" in html.lower() or "film" in html.lower()):
             MAIN_URL = _site_root(final_url)
@@ -77,6 +82,7 @@ def _get_base(force_refresh=False):
     log("Shaheed: fallback base {}".format(MAIN_URL))
     return MAIN_URL
 
+
 def _normalize_url(url):
     if not url:
         return ""
@@ -87,15 +93,19 @@ def _normalize_url(url):
         return urljoin(_get_base(), url)
     return url
 
+
 def _fetch_live(url, referer=None):
-    if not _is_valid_site_url(url):
-        log("Shaheed: rejecting invalid target {}".format(url))
-        return "", ""
+    """
+    FIX: No longer rejects pages when the final URL domain doesn't match
+    VALID_HOST_MARKERS — CDN / image / video URLs are fetched by other means.
+    Only rejects confirmed ACE/Cloudflare walls.
+    """
     ref = referer or _get_base()
-    h, start_url = fetch(url, referer=ref)
-    if _is_blocked_page(h, start_url):
+    h, final_url = fetch(url, referer=ref)
+    if _is_blocked_page(h, final_url):
         return "", ""
-    return h, start_url
+    return h, final_url or url
+
 
 def get_categories():
     base = _get_base().rstrip("/")
@@ -103,159 +113,201 @@ def get_categories():
     categories = []
     seen_urls = set()
     if html:
-        pattern = r'<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>'
-        for match in re.finditer(pattern, html):
-            url = match.group(1)
-            title = match.group(2).strip()
-            if '/category/' in url and title and len(title) < 30 and url not in seen_urls:
+        for m in re.finditer(r'<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>', html):
+            url   = m.group(1)
+            title = m.group(2).strip()
+            if "/category/" in url and title and len(title) < 30 and url not in seen_urls:
                 seen_urls.add(url)
-                emoji = "📁"
-                if 'فيلم' in title or 'افلام' in title:
-                    emoji = "🎬"
-                elif 'مسلسل' in title or 'مسلسلات' in title:
-                    emoji = "📺"
-                categories.append({"title": f"{emoji} {title}", "url": _normalize_url(url), "type": "category"})
+                emoji = "🎬" if "فيلم" in title or "افلام" in title else ("📺" if "مسلسل" in title else "📁")
+                categories.append({
+                    "title": "{} {}".format(emoji, title),
+                    "url":   _normalize_url(url),
+                    "type":  "category",
+                    "_action": "category",
+                })
     if not categories:
         categories = [
-            {"title": "🎬 افلام اجنبي", "url": base + "/category/افلام-اجنبي", "type": "category"},
-            {"title": "🎬 افلام عربي", "url": base + "/category/افلام-عربي", "type": "category"},
-            {"title": "📺 مسلسلات اجنبي", "url": base + "/category/مسلسلات-اجنبي", "type": "category"},
-            {"title": "📺 مسلسلات عربي", "url": base + "/category/مسلسلات-عربي", "type": "category"},
+            {"title": "🎬 افلام اجنبي",    "url": base + "/category/افلام-اجنبي",    "type": "category", "_action": "category"},
+            {"title": "🎬 افلام عربي",     "url": base + "/category/افلام-عربي",     "type": "category", "_action": "category"},
+            {"title": "📺 مسلسلات اجنبي",  "url": base + "/category/مسلسلات-اجنبي",  "type": "category", "_action": "category"},
+            {"title": "📺 مسلسلات عربي",   "url": base + "/category/مسلسلات-عربي",   "type": "category", "_action": "category"},
         ]
     return categories
 
+
 def _extract_cards(html):
     items = []
-    # Try JSON-LD first
-    json_ld_match = re.search(r'<script type="application/ld\+json">(.*?)</script>', html, re.DOTALL)
-    if json_ld_match:
+    # JSON-LD first (most reliable)
+    ld_m = re.search(r'<script type="application/ld\+json">(.*?)</script>', html, re.DOTALL)
+    if ld_m:
         try:
-            data = json.loads(json_ld_match.group(1))
+            data = json.loads(ld_m.group(1))
             if data.get("@type") == "ItemList":
                 for entry in data.get("itemListElement", []):
                     item = entry.get("item", {})
                     if item.get("@type") in ("Movie", "TVSeries"):
-                        title = item.get("name", "")
-                        url = item.get("url", "")
+                        title  = item.get("name", "")
+                        url    = item.get("url", "")
                         poster = item.get("image", "")
                         if title and url:
                             items.append({
-                                "title": html_unescape(title),
-                                "url": _normalize_url(url),
-                                "poster": _normalize_url(poster),
-                                "type": "movie" if item.get("@type") == "Movie" else "series",
-                                "_action": "item",
+                                "title":   html_unescape(title),
+                                "url":     _normalize_url(url),
+                                "poster":  _normalize_url(poster),
+                                "type":    "movie" if item.get("@type") == "Movie" else "series",
+                                "_action": "details",
                             })
                 if items:
                     return items
-        except:
+        except Exception:
             pass
 
-    # Fallback patterns
-    patterns = [
+    # HTML fallbacks
+    for pattern in (
         r'<div[^>]*class="[^"]*post[^"]*"[^>]*>.*?<a[^>]+href="([^"]+)".*?<img[^>]+src="([^"]+)".*?<h[23][^>]*>([^<]+)</h[23]>',
         r'<a[^>]+href="([^"]+)"[^>]*>.*?<img[^>]+src="([^"]+)".*?<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)</div>',
-        r'<div[^>]*class="[^"]*movie-card[^"]*"[^>]*>.*?<a[^>]+href="([^"]+)".*?<img[^>]+src="([^"]+)".*?<div[^>]*class="[^"]*name[^"]*"[^>]*>([^<]+)</div>',
-    ]
-    for pattern in patterns:
+    ):
         matches = re.findall(pattern, html, re.DOTALL | re.I)
         if matches:
-            for match in matches:
-                url = match[0]
-                poster = match[1]
-                title = match[2].strip()
+            for url, poster, title in matches:
+                title = title.strip()
                 if title and url:
                     items.append({
-                        "title": html_unescape(title),
-                        "url": _normalize_url(url),
-                        "poster": _normalize_url(poster),
-                        "type": "movie",
-                        "_action": "item",
+                        "title":   html_unescape(title),
+                        "url":     _normalize_url(url),
+                        "poster":  _normalize_url(poster),
+                        "type":    "movie",
+                        "_action": "details",
                     })
-            if items:
-                break
+            break
     return items
 
+
 def get_category_items(url):
-    html, final_url = _fetch_live(url)
+    html, _ = _fetch_live(url)
     if not html:
         return []
     items = _extract_cards(html)
-    log("Shaheed: category {} -> {} items".format(url, len(items)))
-    # Pagination
-    next_match = re.search(r'<a[^>]+href="([^"]+)"[^>]*>التالي|Next</a>', html, re.I)
-    if next_match:
-        items.append({"title": "➡️ الصفحة التالية", "url": _normalize_url(next_match.group(1)), "type": "category", "_action": "category"})
+    log("Shaheed: {} -> {} items".format(url, len(items)))
+    next_m = re.search(r'<a[^>]+href="([^"]+)"[^>]*>(?:التالي|Next)</a>', html, re.I)
+    if next_m:
+        items.append({
+            "title": "➡️ الصفحة التالية",
+            "url":   _normalize_url(next_m.group(1)),
+            "type":  "category",
+            "_action": "category",
+        })
     return items
+
 
 def search(query, page=1):
     base = _get_base()
-    url = base + "/search?s=" + quote_plus(query) + "&page=" + str(page)
+    url  = base + "/search?s=" + quote_plus(query) + "&page=" + str(page)
     html, _ = _fetch_live(url)
-    return _extract_cards(html)
+    return _extract_cards(html) if html else []
+
 
 def get_page(url):
     html, final_url = _fetch_live(url)
     if not html:
-        return {"title": "Error", "servers": [], "items": []}
-    # Title
-    title_match = re.search(r'<title>(.*?)</title>', html)
-    title = html_unescape(title_match.group(1)) if title_match else ""
-    # Poster
-    poster_match = re.search(r'property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
-    poster = _normalize_url(poster_match.group(1)) if poster_match else ""
-    # Plot
-    plot_match = re.search(r'class=["\']description["\'][^>]*>(.*?)</p>', html, re.S)
+        return {"title": "Error", "servers": [], "items": [], "type": "movie"}
+
+    title_m = re.search(r'<title>(.*?)</title>', html)
+    title   = html_unescape(title_m.group(1)) if title_m else ""
+
+    poster_m = re.search(r'property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
+    poster   = _normalize_url(poster_m.group(1)) if poster_m else ""
+
     plot = ""
-    if plot_match:
-        plot = re.sub(r'<[^>]+>', ' ', plot_match.group(1)).strip()
+    plot_m = re.search(r'class=["\']description["\'][^>]*>(.*?)</p>', html, re.S)
+    if plot_m:
+        plot = re.sub(r'<[^>]+>', ' ', plot_m.group(1)).strip()
         plot = html_unescape(plot)
-    # Servers and episodes
-    servers = []
+
+    servers  = []
     episodes = []
-    # Check if series
-    if '/series/' in final_url or 'مسلسل' in title:
-        ep_pattern = r'<a[^>]+href="([^"]+)"[^>]*>.*?الحلقة\s*(\d+)'
-        ep_matches = re.findall(ep_pattern, html, re.I)
-        for ep_url, ep_num in ep_matches:
-            episodes.append({"title": f"الحلقة {ep_num}", "url": _normalize_url(ep_url), "type": "episode"})
+
+    if "/series/" in (final_url or url) or "مسلسل" in title:
+        for ep_url, ep_num in re.findall(r'<a[^>]+href="([^"]+)"[^>]*>.*?الحلقة\s*(\d+)', html, re.I):
+            episodes.append({
+                "title":   "الحلقة {}".format(ep_num),
+                "url":     _normalize_url(ep_url),
+                "type":    "episode",
+                "_action": "details",
+            })
         if not episodes:
-            season_pattern = r'<a[^>]+href="([^"]+)"[^>]*>.*?الموسم\s*(\d+)'
-            season_matches = re.findall(season_pattern, html, re.I)
-            for s_url, s_num in season_matches:
-                episodes.append({"title": f"الموسم {s_num}", "url": _normalize_url(s_url), "type": "category"})
-    # Extract watch page link
-    watch_match = re.search(r'href=["\']([^"\']+/watch/[^"\']+)["\']', html)
-    if watch_match:
-        watch_url = _normalize_url(watch_match.group(1))
-        wh, _ = _fetch_live(watch_url, referer=final_url)
+            for s_url, s_num in re.findall(r'<a[^>]+href="([^"]+)"[^>]*>.*?الموسم\s*(\d+)', html, re.I):
+                episodes.append({
+                    "title":   "الموسم {}".format(s_num),
+                    "url":     _normalize_url(s_url),
+                    "type":    "category",
+                    "_action": "category",
+                })
+
+    # Watch page servers
+    watch_m = re.search(r'href=["\']([^"\']+/watch/[^"\']+)["\']', html)
+    if watch_m:
+        watch_url = _normalize_url(watch_m.group(1))
+        wh, _ = _fetch_live(watch_url, referer=final_url or url)
         if wh:
-            # Look for servers in JSON
-            js_servers = re.search(r'let servers = JSON\.parse\(\'(.*?)\'\)', wh)
-            if not js_servers:
-                js_servers = re.search(r'var servers = (\[.*?\])', wh, re.S)
-            if js_servers:
-                try:
-                    srv_str = js_servers.group(1).replace("'", '"')
-                    srv_data = json.loads(srv_str)
-                    for s in srv_data:
-                        if s.get("url"):
-                            servers.append({"name": s.get("name", "Server"), "url": s["url"] + "|Referer=" + _site_root(final_url)})
-                except:
-                    pass
-            else:
-                iframe = re.search(r'<iframe[^>]+src="([^"]+)"', wh)
-                if iframe:
-                    servers.append({"name": "Stream", "url": iframe.group(1) + "|Referer=" + _site_root(final_url)})
+            # FIX: improved server JSON parsing — handles both let/var and inline arrays
+            servers = _parse_watch_servers(wh, final_url or url)
+
     return {
-        "url": final_url,
-        "title": title,
-        "plot": plot,
-        "poster": poster,
+        "url":     final_url or url,
+        "title":   title,
+        "plot":    plot,
+        "poster":  poster,
         "servers": servers,
-        "items": episodes,
-        "type": "series" if episodes else "movie",
+        "items":   episodes,
+        "type":    "series" if episodes else "movie",
     }
+
+
+def _parse_watch_servers(html, base_url):
+    """
+    FIX: More robust server parsing — tries JSON array, then iframe fallback.
+    No longer crashes silently on schema changes.
+    """
+    servers = []
+    seen = set()
+    site_root = _site_root(base_url)
+
+    # Pattern 1: servers JSON variable
+    for pat in (
+        r"let\s+servers\s*=\s*JSON\.parse\(['\"](.+?)['\"]\)",
+        r"var\s+servers\s*=\s*(\[.*?\])",
+        r"servers\s*=\s*(\[.*?\])",
+    ):
+        m = re.search(pat, html, re.S | re.I)
+        if m:
+            try:
+                raw = m.group(1).replace("\\'", "'").replace('\\"', '"')
+                # JSON.parse input uses single-quote escaping sometimes
+                if raw.startswith("["):
+                    srv_data = json.loads(raw)
+                else:
+                    srv_data = json.loads(raw.replace("'", '"'))
+                for s in srv_data:
+                    if s.get("url"):
+                        u = s["url"] + "|Referer=" + site_root
+                        if u not in seen:
+                            seen.add(u)
+                            servers.append({"name": s.get("name", "Server"), "url": u, "type": "direct"})
+                if servers:
+                    return servers
+            except Exception as exc:
+                log("Shaheed: server JSON parse failed: {}".format(exc))
+
+    # Pattern 2: iframes
+    for m in re.finditer(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I):
+        u = _normalize_url(m.group(1))
+        if u and u not in seen:
+            seen.add(u)
+            servers.append({"name": "Stream", "url": u + "|Referer=" + site_root, "type": "direct"})
+
+    return servers
+
 
 def extract_stream(url):
     log("Shaheed extract_stream: {}".format(url))
@@ -265,8 +317,12 @@ def extract_stream(url):
         url = parts[0]
         if "Referer=" in parts[1]:
             referer = parts[1].split("Referer=")[1].strip()
+
+    # FIX: increased max_depth to 10 for deeper iframe chains
     from .base import resolve_iframe_chain
-    stream, _ = resolve_iframe_chain(url, referer=referer, max_depth=6)
+    stream, _ = resolve_iframe_chain(url, referer=referer, max_depth=10)
     if stream:
         return stream, None, referer
-    return url, None, referer
+
+    from .base import extract_stream as base_extract_stream
+    return base_extract_stream(url)
