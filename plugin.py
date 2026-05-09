@@ -54,7 +54,7 @@ _TYPE_LABELS    = {"movie": "فيلم", "series": "مسلسل", "episode": "حل
 _TMDB_API_BASE  = "https://api.themoviedb.org/3"
 _TMDB_IMG_BASE  = "https://image.tmdb.org/t/p/w500"
 # FIX #1: removed invalid concatenated "shaheed""yts2" → was missing comma
-_SEARCH_SITE_ORDER = ("egydead", "akoam", "arabseed", "wecima", "topcinema", "fasel", "shaheed")
+_SEARCH_SITE_ORDER = ("egydead", "akwam", "akwams", "arabseed", "wecima", "topcinema", "fasel", "shaheed")
 
 # ─── Neon Color Palette ──────────────────────────────────────────────────────
 _CLR = {
@@ -100,6 +100,8 @@ def _get_cached_poster(url):
 # ─── Extractor Factory ───────────────────────────────────────────────────────
 _EXTRACTOR_MAP = {
     "egydead":    "extractors.egydead",
+    "akwam":      "extractors.akwam",
+    "akwams":     "extractors.akwams",
     "akoam":      "extractors.akoam",
     "arabseed":   "extractors.arabseed",
     "wecima":     "extractors.wecima",
@@ -119,9 +121,13 @@ _SITE_META = {
         "title": "EgyDead",
         "tagline": "واجهة حديثة وبوسترات ومكتبة متجددة",
     },
-    "akoam": {
-        "title": "Akoam",
-        "tagline": "محتوى متنوع مع صفحات تفصيلية واضحة",
+    "akwam": {
+        "title": "Akwam (Classic)",
+        "tagline": "موقع اكوام الكلاسيكي - افلام ومسلسلات عربية واجنبية",
+    },
+    "akwams": {
+        "title": "Akwams (Modern)",
+        "tagline": "موقع اكوام الحديث - واجهة سريعة ومحتوى محدث",
     },
     "arabseed": {
         "title": "Arabseed",
@@ -338,12 +344,24 @@ def _sort_servers(servers):
 
 
 def _decorate_item_title(item, site=None):
-    title = _strip_arabic_from_english_title((item.get("title") or "---").strip())
     action = item.get("_action", "")
+    
+    # Handle separators (non-clickable divider lines)
+    if action == "separator" or item.get("type") == "separator":
+        return "─── {} ───".format(item.get("title", ""))
+    
+    title = _strip_arabic_from_english_title((item.get("title") or "---").strip())
     item_type = item.get("type", action)
+    
     if action.startswith("site_"):
         return title
 
+    # For filter page items (they have type="category" but contain movie data)
+    # Check if this is actually a movie from a filter page
+    if item_type == "category" and item.get("url") and "release-year" in item.get("url", ""):
+        # This is a movie from filter page, show as movie
+        return "[فيلم] {}".format(title)
+    
     if item_type == "movie":
         prefix = "[فيلم]"
     elif item_type == "series":
@@ -351,13 +369,19 @@ def _decorate_item_title(item, site=None):
     elif item_type == "episode":
         prefix = "[حلقة]"
     elif item_type == "category":
-        prefix = "[قسم]"
+        # Categories - show without prefix
+        return title
     else:
         prefix = "•"
 
     item_site = item.get("_site") or site
+    
+    # Only show site label for tools, not for movies/series/episodes
     if item_site and item_type in ("movie", "series", "episode"):
+        return "{} {}".format(prefix, title)
+    elif item_site and item_type == "tool":
         return "{} [{}] {}".format(prefix, _site_label(item_site), title)
+    
     return "{} {}".format(prefix, title)
 
 
@@ -1219,7 +1243,8 @@ class ArabicPlayerHome(Screen):
         items = [
             ("━━  المصادر  ━━━━━━━━━━━━━━━━━", "separator"),
             ("EgyDead          واجهة حديثة وبوسترات", "site_egydead"),
-            ("Akoam            محتوى متنوع وصفحات تفصيلية", "site_akoam"),
+            ("Akwam (Classic)  موقع اكوام الكلاسيكي", "site_akwam"),
+            ("Akwams (Modern)  موقع اكوام الحديث", "site_akwams"),
             ("Arabseed         تصنيفات مرتبة", "site_arabseed"),
             ("Wecima           أقسام واسعة وبحث سريع", "site_wecima"),
             ("Shaheed4u        أفلام ومسلسلات حصرية", "site_shaheed"),
@@ -1241,6 +1266,10 @@ class ArabicPlayerHome(Screen):
         if idx < 0 or idx >= len(self._items):
             return
         item = self._items[idx]
+
+        # Ignore separator items (they are not clickable)
+        if item.get("_action") == "separator" or item.get("type") == "separator":
+            return
 
         if "_action" in item:
             a = item["_action"]

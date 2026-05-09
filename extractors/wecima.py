@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import re
 import sys
+import base64
+import json
 
 from .base import fetch, urljoin, log
 
@@ -13,8 +15,9 @@ else:
     from HTMLParser import HTMLParser
     html_unescape = HTMLParser().unescape
 
-# FIX: expanded domain list — wecima.rent was dead, added .click / .show / .video
+# Updated domain list - wecima.cx is the current active domain
 DOMAINS = [
+    "https://wecima.cx/",
     "https://wecima.click/",
     "https://wecima.show/",
     "https://wecima.video/",
@@ -23,20 +26,20 @@ DOMAINS = [
     "https://www.wecima.site/",
 ]
 VALID_HOST_MARKERS = (
-    "wecima.click", "wecima.show", "wecima.video",
-    "wecima.rent",  "wecima.date",  "wecima.site",
+    "wecima.cx", "wecima.click", "wecima.show", "wecima.video",
+    "wecima.rent", "wecima.date", "wecima.site",
 )
 BLOCKED_HOST_MARKERS = ("alliance4creativity.com",)
 MAIN_URL = None
 _HOME_HTML = None
 
 _CATEGORY_FALLBACKS = {
-    "افلام اجنبي":    "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/",
-    "افلام عربي":     "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%b9%d8%b1%d8%a8%d9%8a/",
-    "مسلسلات اجنبي":  "/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/",
-    "مسلسلات عربية":  "/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%b9%d8%b1%d8%a8%d9%8a%d8%a9/",
-    "مسلسلات انمي":   "/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d9%86%d9%85%d9%8a/",
-    "تريندج":         "/",
+    "افلام اجنبي":    "/category/foreign-movies",
+    "افلام عربي":     "/category/arabic-movies",
+    "مسلسلات اجنبي":  "/category/foreign-series",
+    "مسلسلات عربية":  "/category/arabic-series",
+    "مسلسلات انمي":   "/category/anime-series",
+    "تريندج":         "/trends",
 }
 
 
@@ -57,15 +60,11 @@ def _is_valid_site_url(url):
 
 
 def _is_blocked_page(html, final_url=""):
-    """
-    FIX: Loosened check — only block on confirmed ACE/Cloudflare walls.
-    No longer rejects pages merely because domain changed (CDN redirects are normal).
-    """
     text = (html or "").lower()
     final = (final_url or "").lower()
     if not text:
         return True
-    if "just a moment" in text and "cf-chl" in text:
+    if "just a moment" in text and ("cf-chl" in text or "challenge" in text):
         return True
     if "enable javascript and cookies to continue" in text:
         return True
@@ -82,8 +81,9 @@ def _looks_like_wecima_page(html):
         "Grid--WecimaPosts" in text
         or "NavigationMenu" in text
         or "Thumb--GridItem" in text
+        or "GridItem" in text
         or "WECIMA" in text
-        or "وي سيما" in text
+        or "وى سيما" in text
         or "wecima" in text.lower()
     )
 
@@ -137,7 +137,7 @@ def _normalize_url(url):
     if _is_valid_site_url(url):
         base_parts = urlparse(_get_base())
         parts = urlparse(url)
-        if parts.netloc != base_parts.netloc and "wecima" in parts.netloc:
+        if parts.netloc != base_parts.netloc and any(m in parts.netloc for m in VALID_HOST_MARKERS):
             clean = "{}://{}{}".format(base_parts.scheme, base_parts.netloc, parts.path or "/")
             if parts.query:
                 clean += "?" + parts.query
@@ -221,9 +221,9 @@ def _home_html():
 
 def _guess_type(title, url):
     text = "{} {}".format(title or "", url or "").lower()
-    if any(t in text for t in ("/episode/", "الحلقة", "حلقة")):
+    if any(t in text for t in ("/episode/", "الحلقة", "حلقة", "/season/")):
         return "episode"
-    if any(t in text for t in ("/series", "/season", "مسلسل", "series-")):
+    if any(t in text for t in ("/series", "/seriestv", "مسلسل", "series-", "/season/")):
         return "series"
     return "movie"
 
@@ -237,13 +237,17 @@ def _grid_blocks(html):
             r'<ul[^>]+class="PostItemStats"[^>]*>.*?</ul>\s*</div>',
             block, re.S | re.I,
         )
-        blocks.append(block[: end_match.end()] if end_match else block[:2500])
+        if end_match:
+            blocks.append(block[: end_match.end()])
+        else:
+            blocks.append(block[:3000])
     return blocks
 
 
 def _extract_cards(html):
     cards = []
     seen = set()
+    
     for block in _grid_blocks(html):
         href_match = re.search(r'<a[^>]+href="([^"]+)"', block, re.I)
         if not href_match:
@@ -251,33 +255,38 @@ def _extract_cards(html):
         url = _normalize_url(href_match.group(1))
         if not url or url in seen:
             continue
+        
         lowered = url.lower()
-        if any(t in lowered for t in ("/category/", "/tag/", "/page/", "/filtering", "/feed/")):
+        if any(t in lowered for t in ("/category/", "/tag/", "/page/", "/filtering", "/feed/", "/trends")):
             continue
-
+        
         title_match = (
+            re.search(r'<h2[^>]+class="hasyear"[^>]*itemprop="name"[^>]*>(.*?)</h2>', block, re.S | re.I) or
+            re.search(r'<h2[^>]+class="hasyear"[^>]*>(.*?)</h2>', block, re.S | re.I) or
             re.search(r'title="([^"]+)"', block, re.I)
-            or re.search(r'<strong[^>]+class="hasyear"[^>]*>(.*?)</strong>', block, re.S | re.I)
-            or re.search(r"<h2[^>]*>(.*?)</h2>", block, re.S | re.I)
         )
         title = _clean_title(title_match.group(1) if title_match else "")
         if not title:
             continue
-
-        poster = ""
-        m = re.search(r'data-lazy-style="[^"]*url\(([^)]+)\)"', block, re.I)
-        if m:
-            poster = m.group(1).strip("'\" ")
-        if not poster:
-            m = re.search(r'(?:data-src|src)="([^"]+)"', block, re.I)
-            if m:
-                poster = m.group(1).strip()
-
+        
         year = ""
-        m = re.search(r'<span[^>]+class="year"[^>]*>\(\s*(\d{4})', block, re.I)
-        if m:
-            year = m.group(1)
-
+        year_match = re.search(r'<span[^>]+class="year"[^>]*>\(?\s*(\d{4})\s*\)?</span>', block, re.I)
+        if year_match:
+            year = year_match.group(1)
+        
+        poster = ""
+        poster_match = re.search(r'data-src="([^"]+)"', block, re.I)
+        if poster_match:
+            poster = poster_match.group(1)
+        if not poster:
+            poster_match = re.search(r'data-lazy-style="[^"]*url\(([^)]+)\)"', block, re.I)
+            if poster_match:
+                poster = poster_match.group(1).strip("'\" ")
+        if not poster:
+            poster_match = re.search(r'style="[^"]*--image:url\(([^)]+)\)', block, re.I)
+            if poster_match:
+                poster = poster_match.group(1).strip("'\" ")
+        
         seen.add(url)
         cards.append({
             "title": title,
@@ -287,15 +296,18 @@ def _extract_cards(html):
             "type": _guess_type(title, url),
             "_action": "details",
         })
+    
     log("Wecima: extracted {} cards".format(len(cards)))
     return cards
 
 
 def _extract_next_page(html):
-    for pat in (
+    patterns = [
         r'<a[^>]+class="[^"]*next[^"]*page-numbers[^"]*"[^>]+href="([^"]+)"',
         r'<a[^>]+rel="next"[^>]+href="([^"]+)"',
-    ):
+        r'<a[^>]+href="([^"]+)"[^>]*>»</a>',
+    ]
+    for pat in patterns:
         m = re.search(pat, html or "", re.I)
         if m:
             return _normalize_url(m.group(1))
@@ -313,50 +325,126 @@ def _category_from_home(label, fallback):
             url = _normalize_url(m.group(1))
             if url:
                 return url
-    return _normalize_url(urljoin(_get_base(), _CATEGORY_FALLBACKS.get(label, "/")))
+    return _normalize_url(urljoin(_get_base(), fallback))
+
+
+def _decode_b64(data):
+    """
+    Decode base64 string correctly.
+    The plus signs (+) are valid base64 characters and should be preserved.
+    """
+    try:
+        # Clean the string - remove whitespace
+        data = data.strip()
+        
+        # Fix URL-safe base64 (replace - with +, _ with /)
+        # But preserve existing plus signs (they are correct)
+        if '-' in data or '_' in data:
+            data = data.replace('-', '+').replace('_', '/')
+        
+        # Ensure correct padding
+        padding = 4 - (len(data) % 4)
+        if padding != 4 and padding > 0:
+            data += "=" * padding
+        
+        # Decode bytes
+        decoded_bytes = base64.b64decode(data)
+        
+        # Convert to string - try UTF-8 first, fallback to latin-1
+        try:
+            result = decoded_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            result = decoded_bytes.decode('latin-1')
+        
+        # Clean up the decoded URL
+        result = result.replace("\\/", "/").replace("&amp;", "&").replace("\\u0026", "&")
+        
+        # Remove any non-printable control characters
+        result = ''.join(c for c in result if c.isprintable() or c in '/:.-_?=&%')
+        
+        return result
+    except Exception as e:
+        log("Wecima: base64 decode error: {}".format(e))
+        return None
 
 
 def _extract_servers(html):
     servers = []
     seen = set()
-
-    # Method 1: <ul id="watch"> with data-watch
-    watch_list = re.search(r'<ul[^>]+id="watch"[^>]*>(.*?)</ul>', html or "", re.S | re.I)
-    if watch_list:
-        for idx, m in enumerate(re.finditer(
-            r'<li[^>]+data-watch="([^"]+)"[^>]*>(.*?)</li>',
-            watch_list.group(1), re.S | re.I
-        )):
-            server_url = html_unescape(m.group(1)).strip()
-            if not server_url or server_url in seen:
+    
+    # Method 1: btn elements with data-url (current wecima format)
+    btn_pattern = r'<btn[^>]+data-url="([^"]+)"[^>]*>'
+    for match in re.finditer(btn_pattern, html or "", re.I):
+        encoded_url = match.group(1).strip()
+        if not encoded_url:
+            continue
+        
+        decoded_url = _decode_b64(encoded_url)
+        if not decoded_url:
+            continue
+        
+        # Fix protocol if needed
+        if decoded_url.startswith("//"):
+            decoded_url = "https:" + decoded_url
+        elif not decoded_url.startswith("http") and '://' not in decoded_url:
+            # Check if it looks like a domain with path
+            if '.' in decoded_url and '/' in decoded_url:
+                decoded_url = "https://" + decoded_url
+            else:
                 continue
-            seen.add(server_url)
-            name = _clean_html(m.group(2)) or "Server {}".format(idx + 1)
-            servers.append({"name": name, "url": server_url, "type": "direct"})
+        
+        # Extract server name
+        server_name = "Server"
+        name_match = re.search(r'<strong>(.*?)</strong>', match.group(0), re.S | re.I)
+        if name_match:
+            server_name = name_match.group(1).strip()
+        
+        # Validate URL has proper scheme
+        if decoded_url and decoded_url not in seen and ('http://' in decoded_url or 'https://' in decoded_url):
+            seen.add(decoded_url)
+            servers.append({"name": server_name, "url": decoded_url, "type": "direct"})
+            log("Wecima: added server {}: {}".format(server_name, decoded_url[:80]))
+    
     if servers:
+        log("Wecima: extracted {} servers from btn elements".format(len(servers)))
         return servers
-
-    # Method 2: class containing server/watch/player
-    for m in re.finditer(
-        r'<(?:a|div|li|button)[^>]+(?:class|id)="[^"]*(?:server|watch|player)[^"]*"[^>]*>.*?href="([^"]+)"',
-        html or "", re.S | re.I
-    ):
-        url = _normalize_url(m.group(1))
-        if url and url not in seen and "://" in url:
-            seen.add(url)
-            servers.append({"name": "Server {}".format(len(servers) + 1), "url": url, "type": "direct"})
-
-    # Method 3: iframes with embed/player/stream
+    
+    # Method 2: Download links with data-href
+    download_pattern = r'<li[^>]+class="download-item[^"]*"[^>]*data-href="([^"]+)"'
+    for match in re.finditer(download_pattern, html or "", re.I):
+        encoded_url = match.group(1).strip()
+        decoded_url = _decode_b64(encoded_url)
+        if decoded_url and decoded_url not in seen:
+            if not decoded_url.startswith("http"):
+                decoded_url = "https://" + decoded_url
+            seen.add(decoded_url)
+            servers.append({"name": "Download", "url": decoded_url, "type": "direct"})
+            log("Wecima: added download: {}".format(decoded_url[:80]))
+    
+    # Method 3: Look for iframe embeds
     if not servers:
-        for m in re.finditer(r'<iframe[^>]+src="([^"]+)"', html or "", re.I):
-            url = _normalize_url(m.group(1))
-            if url and url not in seen and "://" in url:
-                if any(k in url for k in ["embed", "player", "watch", "stream", "video"]):
-                    seen.add(url)
-                    servers.append({"name": "Player {}".format(len(servers) + 1), "url": url, "type": "direct"})
-
+        iframe_pattern = r'<iframe[^>]+src="([^"]+)"[^>]*>'
+        for match in re.finditer(iframe_pattern, html or "", re.I):
+            iframe_url = match.group(1)
+            if iframe_url and iframe_url not in seen:
+                # Skip known non-video domains
+                skip_domains = ['youtube', 'google', 'facebook', 'twitter', 'instagram', 'doubleclick', 'googletag']
+                if iframe_url.startswith("blob:"):
+                    continue
+                if not any(d in iframe_url.lower() for d in skip_domains):
+                    iframe_url = _normalize_url(iframe_url)
+                    if iframe_url and 'http' in iframe_url:
+                        seen.add(iframe_url)
+                        servers.append({"name": "Embed Player", "url": iframe_url, "type": "direct"})
+                        log("Wecima: added iframe embed: {}".format(iframe_url[:80]))
+    
     if not servers:
-        log("Wecima: no watch server list found")
+        log("Wecima: WARNING - no servers found in page")
+        # Debug: log a few btn elements
+        btn_snippet = re.findall(r'<btn[^>]+data-url="[^"]+"', html or "")
+        if btn_snippet:
+            log("Wecima: Found btn elements: {}".format(btn_snippet[:2]))
+    
     return servers
 
 
@@ -380,13 +468,39 @@ def _extract_episode_cards(html):
     return episodes
 
 
+def _parse_json_ld(html):
+    """Extract data from JSON-LD script tags."""
+    json_ld_match = re.search(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', html or "", re.S | re.I)
+    if not json_ld_match:
+        return None
+    
+    try:
+        data = json.loads(json_ld_match.group(1))
+        return data
+    except Exception:
+        return None
+
+
 def _detail_title(html):
-    for pattern in (
+    # Check JSON-LD first
+    data = _parse_json_ld(html)
+    if data:
+        if isinstance(data, dict):
+            if data.get("name"):
+                return _clean_title(data["name"])
+            if "@graph" in data:
+                for item in data["@graph"]:
+                    if item.get("name") and ("فيلم" in item.get("name", "") or "مسلسل" in item.get("name", "")):
+                        return _clean_title(item["name"])
+    
+    # Fallback to HTML patterns
+    patterns = [
         r'<h1[^>]+itemprop="name"[^>]*>(.*?)</h1>',
+        r'<h1[^>]+class="[^"]*title[^"]*"[^>]*>(.*?)</h1>',
         r'<h1[^>]*>(.*?)</h1>',
         r'property="og:title"[^>]+content="([^"]+)"',
-        r'content="([^"]+)"[^>]+property="og:title"',
-    ):
+    ]
+    for pattern in patterns:
         m = re.search(pattern, html or "", re.S | re.I)
         if m:
             title = _clean_title(m.group(1))
@@ -396,29 +510,63 @@ def _detail_title(html):
 
 
 def _detail_plot(html):
-    for pattern in (
-        r'<span[^>]+itemprop="description"[^>]*>(.*?)</span>',
+    # Check JSON-LD first
+    data = _parse_json_ld(html)
+    if data:
+        if isinstance(data, dict):
+            if data.get("description"):
+                desc = _clean_html(data["description"])
+                if desc and len(desc) > 30:
+                    return desc
+            if "@graph" in data:
+                for item in data["@graph"]:
+                    if item.get("description"):
+                        desc = _clean_html(item["description"])
+                        if desc and len(desc) > 30:
+                            return desc
+    
+    # Fallback to meta tags
+    patterns = [
         r'<meta[^>]+itemprop="description"[^>]+content="([^"]+)"',
-        r'<meta[^>]+content="([^"]+)"[^>]+itemprop="description"',
         r'property="og:description"[^>]+content="([^"]+)"',
-        r'content="([^"]+)"[^>]+property="og:description"',
         r'name="description"[^>]+content="([^"]+)"',
-    ):
+        r'<div[^>]+class="StoryMovieContent"[^>]*>(.*?)</div>',
+    ]
+    for pattern in patterns:
         m = re.search(pattern, html or "", re.S | re.I)
         if m:
             text = _clean_html(m.group(1))
-            if text and "موقع وي سيما" not in text and "مشاهدة احدث الافلام" not in text:
+            if text and "موقع وي سيما" not in text.lower() and len(text) > 30:
                 return text
     return ""
 
 
 def _detail_poster(html):
-    for pattern in (
-        r'<wecima[^>]+style="[^"]*--img:url\(([^)]+)\)',
+    # Check JSON-LD first
+    data = _parse_json_ld(html)
+    if data:
+        if isinstance(data, dict):
+            if data.get("image") and isinstance(data["image"], dict):
+                poster = data["image"].get("url", "")
+                if poster:
+                    return _normalize_url(poster)
+            if "@graph" in data:
+                for item in data["@graph"]:
+                    if item.get("image") and isinstance(item["image"], dict):
+                        poster = item["image"].get("url", "")
+                        if poster:
+                            return _normalize_url(poster)
+                    if item.get("thumbnailUrl"):
+                        return _normalize_url(item["thumbnailUrl"])
+    
+    # Fallback to meta tags
+    patterns = [
         r'property="og:image"[^>]+content="([^"]+)"',
-        r'content="([^"]+)"[^>]+property="og:image"',
-        r'(?:data-src|src)="([^"]+)"[^>]+itemprop="image"',
-    ):
+        r'<meta[^>]+itemprop="thumbnailUrl"[^>]+content="([^"]+)"',
+        r'data-lazy-style="[^"]*--img:url\(([^)]+)\)',
+        r'data-src="([^"]+)"',
+    ]
+    for pattern in patterns:
         m = re.search(pattern, html or "", re.I)
         if m:
             poster = m.group(1).strip("'\" ")
@@ -428,17 +576,48 @@ def _detail_poster(html):
 
 
 def _detail_year(title, html):
-    m = re.search(r'\b(19\d{2}|20\d{2}|21\d{2})\b', title or "")
+    # Check JSON-LD first
+    data = _parse_json_ld(html)
+    if data:
+        if isinstance(data, dict):
+            if data.get("datePublished"):
+                year_match = re.search(r'(\d{4})', data["datePublished"])
+                if year_match:
+                    return year_match.group(1)
+            if "@graph" in data:
+                for item in data["@graph"]:
+                    if item.get("datePublished"):
+                        year_match = re.search(r'(\d{4})', item["datePublished"])
+                        if year_match:
+                            return year_match.group(1)
+    
+    # Fallback to patterns
+    m = re.search(r'<span[^>]+class="year"[^>]*>\(?\s*(\d{4})\s*\)?</span>', html or "", re.I)
     if m:
         return m.group(1)
-    for pat in (r'datePublished[^>]*?(\d{4})', r'"datePublished"\s*:\s*"(\d{4})'):
-        m = re.search(pat, html or "", re.I)
-        if m:
-            return m.group(1)
+    m = re.search(r'\b(19\d{2}|20\d{2})\b', title or "")
+    if m:
+        return m.group(1)
     return ""
 
 
 def _detail_rating(html):
+    # Check JSON-LD first
+    data = _parse_json_ld(html)
+    if data:
+        if isinstance(data, dict):
+            if "aggregateRating" in data:
+                rating = data["aggregateRating"].get("ratingValue", "")
+                if rating:
+                    return str(rating)
+            if "@graph" in data:
+                for item in data["@graph"]:
+                    if "aggregateRating" in item:
+                        rating = item["aggregateRating"].get("ratingValue", "")
+                        if rating:
+                            return str(rating)
+    
+    # Fallback to regex patterns
     m = re.search(r'"ratingValue"\s*:\s*"?(\\?\d+(?:\.\d+)?)', html or "", re.I)
     if m:
         return m.group(1).replace("\\", "")
@@ -466,12 +645,6 @@ def get_category_items(url):
         log("Wecima: category blocked {}".format(url))
         return []
     items = _extract_cards(html)
-    if not items:
-        alt_html, alt_url = _fetch_live((final_url or url).rstrip("/") + "/page/1/", referer=base)
-        if not _is_blocked_page(alt_html, alt_url):
-            html = alt_html
-            items = _extract_cards(alt_html)
-    log("Wecima: {} -> {} items".format(url, len(items)))
     next_page = _extract_next_page(html)
     if next_page:
         items.append({"title": "➡️ الصفحة التالية", "url": next_page, "type": "category", "_action": "category"})
@@ -493,7 +666,7 @@ def search(query, page=1):
         if items:
             break
     log("Wecima: search '{}' -> {} items".format(query, len(items)))
-    if not html and not items:
+    if not items:
         return []
     next_page = _extract_next_page(html)
     if next_page:
@@ -508,13 +681,13 @@ def get_page(url, m_type=None):
         log("Wecima: detail failed {}".format(url))
         return {"title": "Error", "servers": [], "items": [], "type": m_type or "movie"}
 
-    title  = _detail_title(html)
+    title = _detail_title(html)
     poster = _detail_poster(html)
-    plot   = _detail_plot(html)
-    year   = _detail_year(title, html)
+    plot = _detail_plot(html)
+    year = _detail_year(title, html)
     rating = _detail_rating(html)
 
-    servers  = _extract_servers(html)
+    servers = _extract_servers(html)
     episodes = [] if servers else _extract_episode_cards(html)
     log("Wecima: detail {} -> servers={}, episodes={}".format(url, len(servers), len(episodes)))
 
@@ -525,23 +698,18 @@ def get_page(url, m_type=None):
         item_type = "episode"
 
     return {
-        "url":     final_url or url,
-        "title":   title,
-        "plot":    plot,
-        "poster":  poster,
-        "rating":  rating,
-        "year":    year,
+        "url": final_url or url,
+        "title": title,
+        "plot": plot,
+        "poster": poster,
+        "rating": rating,
+        "year": year,
         "servers": servers,
-        "items":   episodes,
-        "type":    item_type,
+        "items": episodes,
+        "type": item_type,
     }
 
 
 def extract_stream(url):
-    """
-    FIX: Removed the brittle akhbarworld/mycimafsd branch.
-    All resolution now delegates to the unified base extractor which
-    handles all known video hosts including the ones Wecima uses.
-    """
     from .base import extract_stream as base_extract_stream
     return base_extract_stream(url)
