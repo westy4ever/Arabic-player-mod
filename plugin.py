@@ -54,7 +54,7 @@ _TYPE_LABELS    = {"movie": "فيلم", "series": "مسلسل", "episode": "حل
 _TMDB_API_BASE  = "https://api.themoviedb.org/3"
 _TMDB_IMG_BASE  = "https://image.tmdb.org/t/p/w500"
 # FIX #1: removed invalid concatenated "shaheed""yts2" → was missing comma
-_SEARCH_SITE_ORDER = ("egydead", "akwam", "akwams", "arabseed", "wecima", "topcinema", "fasel", "shaheed")
+_SEARCH_SITE_ORDER = ("egydead", "akwam", "akwams", "arabseed", "wecima", "topcinema", "fasel", "faselhdx", "shaheed")
 
 # ─── Neon Color Palette ──────────────────────────────────────────────────────
 _CLR = {
@@ -107,7 +107,8 @@ _EXTRACTOR_MAP = {
     "wecima":     "extractors.wecima",
     "shaheed":    "extractors.shaheed",
     "topcinema":  "extractors.topcinema",
-    "fasel":      "extractors.fasel",
+    "fasel":      "extractors.faselhd_rip",      # For faselhd.rip
+    "faselhdx":   "extractors.faselhd_hdx",      # For web5106x.faselhdx.bid
 }
 
 def _get_extractor(site):
@@ -145,9 +146,13 @@ _SITE_META = {
         "title": "TopCinemaa",
         "tagline": "مكتبة ضخمة من الأفلام والمسلسلات والسلاسل",
     },
-    "fasel": {
-        "title": "FaselHD",
-        "tagline": "دقة عالية وسيرفرات متعددة للمشاهدة بدون تقطيع",
+        "fasel": {
+        "title": "FaselHD (RIP)",
+        "tagline": "واجهة حديثة - سيرفرات متعددة بجودة عالية",
+    },
+    "faselhdx": {
+        "title": "FaselHD (HDX)",
+        "tagline": "النسخة الكلاسيكية - دقة عالية وسيرفرات متنوعة",
     },
 }
 
@@ -1249,7 +1254,8 @@ class ArabicPlayerHome(Screen):
             ("Wecima           أقسام واسعة وبحث سريع", "site_wecima"),
             ("Shaheed4u        أفلام ومسلسلات حصرية", "site_shaheed"),
             ("TopCinemaa       مكتبة ضخمة", "site_topcinema"),
-            ("FaselHD          دقة عالية بدون تقطيع", "site_fasel"),
+            ("FaselHD (RIP)    واجهة حديثة - سيرفرات متعددة", "site_fasel"),
+            ("FaselHD (HDX)    النسخة الكلاسيكية - دقة عالية", "site_faselhdx"),
             ("━━  الأدوات  ━━━━━━━━━━━━━━━━━", "separator"),
             ("البحث الشامل", "search"),
             ("المفضلة", "favorites"),

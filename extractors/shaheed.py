@@ -38,15 +38,6 @@ def _host(url):
         return ""
 
 
-def _is_valid_site_url(url):
-    host = _host(url)
-    if not host:
-        return False
-    if any(m in host for m in BLOCKED_HOST_MARKERS):
-        return False
-    return any(m in host for m in VALID_HOST_MARKERS)
-
-
 def _is_blocked_page(html, final_url=""):
     text = (html or "").lower()
     final = (final_url or "").lower()
@@ -100,7 +91,6 @@ def _normalize_url(url):
 
 
 def _fetch_live(url, referer=None):
-    """Fetch with proper headers and error handling"""
     ref = referer or _get_base()
     h, final_url = fetch(url, referer=ref)
     if _is_blocked_page(h, final_url):
@@ -109,7 +99,6 @@ def _fetch_live(url, referer=None):
 
 
 def get_categories():
-    """Return category list for Shaheed4u"""
     base = _get_base().rstrip("/")
     return [
         {"title": "🎬 افلام اجنبي", "url": base + "/category/افلام-اجنبي", "type": "category", "_action": "category"},
@@ -131,111 +120,138 @@ def get_categories():
 
 
 def get_category_items(url):
-    """Parse category page with movie/show cards"""
     html, _ = _fetch_live(url)
     if not html:
         return []
-    
+
     items = []
     seen_urls = set()
-    
-    # Find all show-card elements (works for both /film/ and /post/ URLs)
-    card_pattern = r'<a\s+href="([^"]+)"\s+class="show-card"[^>]*style="background-image:\s*url\(([^)]+)\)"[^>]*>(.*?)</a>'
-    
-    for match in re.finditer(card_pattern, html, re.DOTALL | re.I):
-        url_path = match.group(1)
-        poster_url = match.group(2).strip()
-        card_content = match.group(3)
-        
-        full_url = _normalize_url(url_path)
-        if full_url in seen_urls:
+
+    # FIX: the old pattern required a specific attribute order (href then class then style)
+    # and an exact single space between attributes. Sites often vary attribute order.
+    # Strategy 1: find <a class="show-card"> with any attribute order, grab poster from style
+    for match in re.finditer(r'<a\s[^>]*class="[^"]*show-card[^"]*"[^>]*>(.*?)</a>', html, re.DOTALL | re.I):
+        tag_open = html[match.start():match.start() + 300]
+        card_content = match.group(1)
+
+        # href from the opening tag
+        href_m = re.search(r'href="([^"]+)"', tag_open, re.I)
+        if not href_m:
+            continue
+        full_url = _normalize_url(href_m.group(1))
+        if not full_url or full_url in seen_urls:
             continue
         seen_urls.add(full_url)
-        
-        # Extract title from <p class="title">
-        title_match = re.search(r'<p\s+class="title">([^<]+)</p>', card_content)
-        title = html_unescape(title_match.group(1).strip()) if title_match else ""
-        
+
+        # poster from style="background-image:url(...)" — in opening tag or card content
+        poster_url = ""
+        poster_m = re.search(r'background-image:\s*url\(([^)]+)\)', tag_open + card_content, re.I)
+        if poster_m:
+            poster_url = _normalize_url(poster_m.group(1).strip("'\" "))
+
+        # title from <p class="title">
+        title_m = re.search(r'<p[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)</p>', card_content, re.I)
+        if not title_m:
+            title_m = re.search(r'<[^>]+class="[^"]*title[^"]*"[^>]*>([^<]+)</', card_content, re.I)
+        if not title_m:
+            # fall back to any text in the card
+            title_m = re.search(r'>([^<]{3,})<', card_content)
+        title = html_unescape(title_m.group(1).strip()) if title_m else ""
         if not title:
-            title_match = re.search(r'title="([^"]+)"', card_content)
-            title = html_unescape(title_match.group(1).strip()) if title_match else ""
-        
-        # Extract category
-        categ_match = re.search(r'<span\s+class="categ">([^<]+)</span>', card_content)
-        category = categ_match.group(1).strip() if categ_match else ""
-        
-        # Extract quality sticker
-        quality_match = re.search(r'<span\s+class="sticker"[^>]*>([^<]+)</span>', card_content)
-        quality = quality_match.group(1).strip() if quality_match else ""
-        
-        # Determine type
-        if "مسلسلات" in category or "عروض" in category or "/category/مسلسلات" in url or "/category/عروض" in url:
-            item_type = "series"
-        else:
-            item_type = "movie"
-        
-        if title:
-            display_title = f"{title} [{quality}]" if quality else title
+            continue
+
+        quality_m = re.search(r'<span[^>]*class="[^"]*sticker[^"]*"[^>]*>([^<]+)</span>', card_content, re.I)
+        quality = quality_m.group(1).strip() if quality_m else ""
+
+        categ_m = re.search(r'<span[^>]*class="[^"]*categ[^"]*"[^>]*>([^<]+)</span>', card_content, re.I)
+        category = categ_m.group(1).strip() if categ_m else ""
+
+        item_type = "series" if ("مسلسلات" in category or "عروض" in category or
+                                  "/category/مسلسلات" in url or "/category/عروض" in url) else "movie"
+
+        display_title = "{} [{}]".format(title, quality) if quality else title
+        items.append({
+            "title": display_title,
+            "url": full_url,
+            "poster": poster_url,
+            "plot": category,
+            "type": item_type,
+            "_action": "details",
+        })
+
+    # Strategy 2 fallback: article/div cards with poster images (site may have redesigned)
+    if not items:
+        log("Shaheed: show-card pattern matched 0 items, trying generic card fallback")
+        for match in re.finditer(
+            r'<(?:article|div)[^>]+class="[^"]*(?:card|item|post|movie)[^"]*"[^>]*>(.*?)</(?:article|div)>',
+            html, re.S | re.I
+        ):
+            block = match.group(1)
+            href_m = re.search(r'href="([^"]+)"', block, re.I)
+            if not href_m:
+                continue
+            full_url = _normalize_url(href_m.group(1))
+            if not full_url or full_url in seen_urls:
+                continue
+            seen_urls.add(full_url)
+
+            title_m = (re.search(r'<h[1-4][^>]*>([^<]+)</h[1-4]>', block, re.I) or
+                       re.search(r'alt="([^"]+)"', block, re.I) or
+                       re.search(r'title="([^"]+)"', block, re.I))
+            title = html_unescape(title_m.group(1).strip()) if title_m else ""
+            if not title:
+                continue
+
+            img_m = (re.search(r'src="([^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"', block, re.I) or
+                     re.search(r'data-src="([^"]+)"', block, re.I))
+            poster_url = _normalize_url(img_m.group(1)) if img_m else ""
+
             items.append({
-                "title": display_title,
+                "title": title,
                 "url": full_url,
-                "poster": _normalize_url(poster_url),
-                "plot": category,
-                "type": item_type,
+                "poster": poster_url,
+                "type": "movie",
                 "_action": "details",
             })
-    
-    # Check for pagination
+
+    # Pagination
     pagination_pattern = r'<button[^>]+onclick="updateQuery\(\'page\',\s*(\d+)\)"[^>]*>(\d+)</button>'
     current_page = None
     max_page = None
-    
     for match in re.finditer(pagination_pattern, html):
         page_num = int(match.group(2))
         if match.group(1) == str(page_num):
             current_page = page_num
         if page_num > (max_page or 0):
             max_page = page_num
-    
-    # Add next page button
+
     if current_page and max_page and current_page < max_page:
-        if '?' in url:
-            next_url = url + "&page=" + str(current_page + 1)
-        else:
-            next_url = url + "?page=" + str(current_page + 1)
+        sep = "&" if "?" in url else "?"
         items.append({
             "title": "➡️ Next Page",
-            "url": next_url,
+            "url": url + sep + "page=" + str(current_page + 1),
             "type": "category",
             "_action": "category",
         })
-    
+
     log("Shaheed: {} -> {} items".format(url, len(items)))
     return items
 
 
 def search(query, page=1):
-    """Search for movies/series"""
     base = _get_base()
     url = base + "/search?s=" + quote_plus(query)
     if page > 1:
         url += "&page=" + str(page)
-    
     html, _ = _fetch_live(url)
     if not html:
         return []
-    
     return get_category_items(url)
 
 
 def get_page(url):
-    """
-    Fetch and parse a movie/series/show detail/watch page.
-    Extracts servers from the JavaScript servers array.
-    Works for /film/, /post/, and /watch/ URLs.
-    """
     html, final_url = _fetch_live(url)
-    
+
     result = {
         "url": final_url or url,
         "title": "",
@@ -245,147 +261,98 @@ def get_page(url):
         "items": [],
         "type": "movie",
     }
-    
+
     if not html:
         log("Shaheed: get_page failed for {}".format(url))
         return result
-    
-    # Extract title
+
     title_match = re.search(r'<title>(.*?)</title>', html)
     if title_match:
         title = html_unescape(title_match.group(1))
         title = re.sub(r'\s*[-|]\s*شاهد\s*فور\s*يو.*$', '', title)
-        title = re.sub(r'\s*[-|]\s*Shahid4u.*$', '', title, re.I)
+        title = re.sub(r'\s*[-|]\s*Shahid4u.*$', '', title, flags=re.I)
         result["title"] = title.strip()
-    
-    # Extract description
+
     desc_match = re.search(r'<meta\s+name=["\']description["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
     if desc_match:
         result["plot"] = html_unescape(desc_match.group(1))
-    
-    # Extract poster from og:image or meta
+
     poster_match = re.search(r'<meta\s+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
     if poster_match:
         result["poster"] = _normalize_url(poster_match.group(1))
-    
-    # ===== CRITICAL: Extract servers from JavaScript array =====
-    # Pattern: let servers = JSON.parse('[...]');
+
+    # Extract servers from JavaScript array
     servers_pattern = r'let\s+servers\s*=\s*JSON\.parse\(\'([^\']+)\'\)'
-    
     match = re.search(servers_pattern, html)
     if match:
         try:
-            servers_json = match.group(1)
-            # Fix escaped characters
-            servers_json = servers_json.replace('\\"', '"')
+            servers_json = match.group(1).replace('\\"', '"')
             servers_data = json.loads(servers_json)
-            
             for server in servers_data:
                 if server.get("url"):
-                    server_url = server["url"]
-                    server_name = server.get("name", "Server")
                     result["servers"].append({
-                        "name": server_name,
-                        "url": server_url,
+                        "name": server.get("name", "Server"),
+                        "url": server["url"],
                         "type": "embed"
                     })
             log("Shaheed: extracted {} servers from JSON".format(len(result["servers"])))
         except Exception as e:
             log("Shaheed: failed to parse servers JSON: {}".format(e))
-    
-    # Alternative pattern: standalone servers array
+
     if not result["servers"]:
         alt_pattern = r'servers\s*=\s*(\[.*?\])'
         match = re.search(alt_pattern, html, re.DOTALL)
         if match:
             try:
-                servers_data = json.loads(match.group(1))
-                for server in servers_data:
+                for server in json.loads(match.group(1)):
                     if server.get("url"):
                         result["servers"].append({
                             "name": server.get("name", "Server"),
                             "url": server["url"],
                             "type": "embed"
                         })
-                log("Shaheed: extracted {} servers from alt JSON".format(len(result["servers"])))
             except Exception as e:
                 log("Shaheed: failed to parse alt servers JSON: {}".format(e))
-    
-    # Fallback: look for iframe embeds (like fastvid.cam)
+
     if not result["servers"]:
-        iframe_pattern = r'<iframe[^>]+src=["\']([^"\']+)["\']'
-        skip_domains = ['youtube', 'facebook', 'twitter', 'google', 'doubleclick', 
-                       'analytics', 'googletagmanager', 'google-analytics', 
-                       'cloudflareinsights', 'adsco.re', 'intelligenceadx']
-        
-        for iframe_match in re.finditer(iframe_pattern, html, re.I):
+        skip_domains = ['youtube', 'facebook', 'twitter', 'google', 'doubleclick',
+                        'analytics', 'googletagmanager', 'cloudflareinsights',
+                        'adsco.re', 'intelligenceadx']
+        embed_domains = ['fastvid.cam', 'streamtape', 'doodstream', 'voe',
+                         'filemoon', 'rpmvip', 'upn.one', 'cleantechworld',
+                         'streamwish', 'mixdrop', 'vidguard']
+        for iframe_match in re.finditer(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I):
             iframe_url = iframe_match.group(1)
-            
-            # Skip obvious ad/tracking domains
             if any(x in iframe_url.lower() for x in skip_domains):
                 continue
-            
-            # Make absolute URL if needed
             if iframe_url.startswith("//"):
                 iframe_url = "https:" + iframe_url
             elif iframe_url.startswith("/"):
                 p = urlparse(final_url or url)
                 iframe_url = "{}://{}{}".format(p.scheme, p.netloc, iframe_url)
-            
-            # Check if it's a video embed domain
-            embed_domains = ['fastvid.cam', 'streamtape', 'doodstream', 'voe', 
-                            'filemoon', 'rpmvip', 'upn.one', 'cleantechworld']
             if any(d in iframe_url.lower() for d in embed_domains):
-                result["servers"].append({
-                    "name": "Embed Player",
-                    "url": iframe_url,
-                    "type": "iframe"
-                })
-    
-    # Also look for direct links to m3u8 in the page
-    if not result["servers"]:
-        direct_patterns = [
-            r'(https?://[^\s"\']+\.m3u8[^\s"\']*)',
-            r'"(https?://[^"]+\.m3u8[^"]+)"',
-        ]
-        for pattern in direct_patterns:
-            matches = re.findall(pattern, html, re.I)
-            for m in matches:
-                if 'fastvid.cam' in m or 'rpmvip' in m or 'upn.one' in m:
-                    result["servers"].append({
-                        "name": "Direct Stream",
-                        "url": m,
-                        "type": "direct"
-                    })
-    
-    # Determine type from URL and content
-    if "/مسلسلات" in url or "series" in url.lower() or "/عروض" in url:
+                result["servers"].append({"name": "Embed Player", "url": iframe_url, "type": "iframe"})
+
+    if "/مسلسلات" in url or "series" in url.lower() or "/عروض" in url or "/post/" in url:
         result["type"] = "series"
-    elif "/post/" in url:
-        result["type"] = "series"
-    
+
     log("Shaheed: {} -> found {} servers".format(url, len(result["servers"])))
     return result
 
 
 def extract_stream(url):
-    """Resolve a server URL to a playable stream"""
     log("Shaheed extract_stream: {}".format(url))
-    
     referer = _get_base()
     if "|" in url:
         parts = url.split("|", 1)
         url = parts[0]
         if "Referer=" in parts[1]:
             referer = parts[1].split("Referer=")[1].strip()
-    
-    from .base import resolve_iframe_chain, resolve_host
-    
-    # Try iframe chain first
+
+    from .base import resolve_iframe_chain
     stream, _ = resolve_iframe_chain(url, referer=referer, max_depth=10)
     if stream:
         return stream, None, referer
-    
-    # Try host resolver
+
     from .base import extract_stream as base_extract_stream
     return base_extract_stream(url)

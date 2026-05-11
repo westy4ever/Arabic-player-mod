@@ -7,7 +7,7 @@ import json
 from .base import fetch, urljoin, log
 
 if sys.version_info[0] == 3:
-    from urllib.parse import quote_plus, urlparse
+    from urllib.parse import quote_plus, urlparse, quote
     from html import unescape as html_unescape
 else:
     from urllib import quote_plus
@@ -15,19 +15,15 @@ else:
     from HTMLParser import HTMLParser
     html_unescape = HTMLParser().unescape
 
-# Updated domain list - wecima.cx is the current active domain
+# Updated domain list - wecima.click is currently the most active
 DOMAINS = [
-    "https://wecima.cx/",
     "https://wecima.click/",
-    "https://wecima.show/",
-    "https://wecima.video/",
-    "https://wecima.rent/",
-    "https://wecima.date/",
+    "https://wecima.cx/",
+    "https://wecima.bid/",
     "https://www.wecima.site/",
 ]
 VALID_HOST_MARKERS = (
-    "wecima.cx", "wecima.click", "wecima.show", "wecima.video",
-    "wecima.rent", "wecima.date", "wecima.site",
+    "wecima.click", "wecima.cx", "wecima.bid", "wecima.site",
 )
 BLOCKED_HOST_MARKERS = ("alliance4creativity.com",)
 MAIN_URL = None
@@ -82,6 +78,7 @@ def _looks_like_wecima_page(html):
         or "NavigationMenu" in text
         or "Thumb--GridItem" in text
         or "GridItem" in text
+        or "List--Servers" in text  # New server list container
         or "WECIMA" in text
         or "وى سيما" in text
         or "wecima" in text.lower()
@@ -328,123 +325,127 @@ def _category_from_home(label, fallback):
     return _normalize_url(urljoin(_get_base(), fallback))
 
 
-def _decode_b64(data):
+def _decode_wecima_url(encoded):
     """
-    Decode base64 string correctly.
-    The plus signs (+) are valid base64 characters and should be preserved.
+    Decode Wecima's obfuscated URLs.
+    
+    Steps:
+    1. Clean the string - replace spaces with '+'
+    2. Fix padding - add '=' if needed
+    3. Base64 decode
+    4. Apply URL quoting (Akwam fix) for Arabic characters
     """
-    try:
-        # Clean the string - remove whitespace
-        data = data.strip()
-        
-        # Fix URL-safe base64 (replace - with +, _ with /)
-        # But preserve existing plus signs (they are correct)
-        if '-' in data or '_' in data:
-            data = data.replace('-', '+').replace('_', '/')
-        
-        # Ensure correct padding
-        padding = 4 - (len(data) % 4)
-        if padding != 4 and padding > 0:
-            data += "=" * padding
-        
-        # Decode bytes
-        decoded_bytes = base64.b64decode(data)
-        
-        # Convert to string - try UTF-8 first, fallback to latin-1
-        try:
-            result = decoded_bytes.decode('utf-8')
-        except UnicodeDecodeError:
-            result = decoded_bytes.decode('latin-1')
-        
-        # Clean up the decoded URL
-        result = result.replace("\\/", "/").replace("&amp;", "&").replace("\\u0026", "&")
-        
-        # Remove any non-printable control characters
-        result = ''.join(c for c in result if c.isprintable() or c in '/:.-_?=&%')
-        
-        return result
-    except Exception as e:
-        log("Wecima: base64 decode error: {}".format(e))
+    if not encoded:
         return None
+    
+    log("Wecima: decoding: {}".format(repr(encoded[:80])))
+    
+    try:
+        # Step 1: Clean the string - some WeCima versions use spaces for '+'
+        cleaned = encoded.strip().replace(' ', '+')
+        
+        # Step 2: Fix padding
+        missing_padding = len(cleaned) % 4
+        if missing_padding:
+            cleaned += '=' * (4 - missing_padding)
+        
+        # Step 3: Decode
+        decoded_bytes = base64.b64decode(cleaned)
+        
+        # Try UTF-8 first, fallback to latin-1
+        try:
+            decoded_url = decoded_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            decoded_url = decoded_bytes.decode('latin-1')
+        
+        # Step 4: Apply the 'Akwam Fix' - proper URL quoting for Arabic characters
+        # This preserves the URL structure while encoding non-ASCII characters
+        decoded_url = quote(decoded_url, safe=':/?&=#+')
+        
+        # Clean up any remaining non-printable characters
+        decoded_url = re.sub(r'[^\x20-\x7E]', '', decoded_url)
+        
+        # Fix protocol if needed
+        if decoded_url.startswith('//'):
+            decoded_url = 'https:' + decoded_url
+        elif decoded_url.startswith('https') and not decoded_url.startswith('https://'):
+            decoded_url = 'https://' + decoded_url[5:]
+        elif decoded_url.startswith('http') and not decoded_url.startswith('http://'):
+            decoded_url = 'http://' + decoded_url[4:]
+        
+        # Validate the URL looks reasonable
+        if decoded_url and ('http://' in decoded_url or 'https://' in decoded_url):
+            log("Wecima: decode success: {}".format(decoded_url[:80]))
+            return decoded_url
+        else:
+            log("Wecima: decoded but doesn't look like URL: {}".format(repr(decoded_url[:80])))
+            
+    except Exception as e:
+        log("Wecima: decode failed: {}".format(str(e)[:50]))
+    
+    # Fallback: Try to extract URL pattern directly
+    url_pattern = r'[a-zA-Z0-9\-]+\.(?:com|net|org|tv|cx|bid|site|click|show|video|rent|date|live|rip|top|xyz)(?:/[a-zA-Z0-9\-_/]+)?'
+    match = re.search(url_pattern, encoded)
+    if match:
+        url = "https://" + match.group(0)
+        log("Wecima: extracted URL pattern: {}".format(url))
+        return url
+    
+    return None
 
 
 def _extract_servers(html):
+    """
+    Robust server extraction for the new WeCima 'List--Servers' layout.
+    Fixes the 'No servers detected' issue.
+    """
     servers = []
     seen = set()
     
-    # Method 1: btn elements with data-url (current wecima format)
-    btn_pattern = r'<btn[^>]+data-url="([^"]+)"[^>]*>'
-    for match in re.finditer(btn_pattern, html or "", re.I):
-        encoded_url = match.group(1).strip()
-        if not encoded_url:
-            continue
+    if not html:
+        log("Wecima: empty HTML in _extract_servers")
+        return []
+
+    # 1. Targeted Extraction: Isolate the server list container first
+    # WeCima now wraps all real stream links inside this specific class
+    server_block_match = re.search(r'class="List--Servers">(.*?)</ul>', html, re.S)
+    
+    if server_block_match:
+        content = server_block_match.group(1)
+        # Find all data-url elements (they can be btn, li, or div)
+        items = re.findall(r'data-url="([^"]+)"[^>]*>(.*?)<\/(?:btn|li|div)>', content, re.S)
         
-        decoded_url = _decode_b64(encoded_url)
-        if not decoded_url:
-            continue
-        
-        # Fix protocol if needed
-        if decoded_url.startswith("//"):
-            decoded_url = "https:" + decoded_url
-        elif not decoded_url.startswith("http") and '://' not in decoded_url:
-            # Check if it looks like a domain with path
-            if '.' in decoded_url and '/' in decoded_url:
-                decoded_url = "https://" + decoded_url
-            else:
+        for encoded_url, inner_html in items:
+            # Decode the URL (Handles the base64/HM6Ly logic)
+            decoded_url = _decode_wecima_url(encoded_url)
+            if not decoded_url or not decoded_url.startswith('http'):
                 continue
-        
-        # Extract server name
-        server_name = "Server"
-        name_match = re.search(r'<strong>(.*?)</strong>', match.group(0), re.S | re.I)
-        if name_match:
-            server_name = name_match.group(1).strip()
-        
-        # Validate URL has proper scheme
-        if decoded_url and decoded_url not in seen and ('http://' in decoded_url or 'https://' in decoded_url):
-            seen.add(decoded_url)
-            servers.append({"name": server_name, "url": decoded_url, "type": "direct"})
-            log("Wecima: added server {}: {}".format(server_name, decoded_url[:80]))
-    
-    if servers:
-        log("Wecima: extracted {} servers from btn elements".format(len(servers)))
-        return servers
-    
-    # Method 2: Download links with data-href
-    download_pattern = r'<li[^>]+class="download-item[^"]*"[^>]*data-href="([^"]+)"'
-    for match in re.finditer(download_pattern, html or "", re.I):
-        encoded_url = match.group(1).strip()
-        decoded_url = _decode_b64(encoded_url)
-        if decoded_url and decoded_url not in seen:
-            if not decoded_url.startswith("http"):
-                decoded_url = "https://" + decoded_url
-            seen.add(decoded_url)
-            servers.append({"name": "Download", "url": decoded_url, "type": "direct"})
-            log("Wecima: added download: {}".format(decoded_url[:80]))
-    
-    # Method 3: Look for iframe embeds
+                
+            if decoded_url not in seen:
+                # Extract the server name (usually inside <strong>)
+                name_match = re.search(r'<strong>(.*?)</strong>', inner_html)
+                server_name = name_match.group(1).strip() if name_match else "Wecima Server"
+                
+                seen.add(decoded_url)
+                servers.append({"name": server_name, "url": decoded_url, "type": "direct"})
+                log("Wecima: Found server '{}' -> {}".format(server_name, decoded_url[:60]))
+
+    # 2. Fallback Logic: Deep scan if the targeted block wasn't found
     if not servers:
-        iframe_pattern = r'<iframe[^>]+src="([^"]+)"[^>]*>'
-        for match in re.finditer(iframe_pattern, html or "", re.I):
-            iframe_url = match.group(1)
-            if iframe_url and iframe_url not in seen:
-                # Skip known non-video domains
-                skip_domains = ['youtube', 'google', 'facebook', 'twitter', 'instagram', 'doubleclick', 'googletag']
-                if iframe_url.startswith("blob:"):
-                    continue
-                if not any(d in iframe_url.lower() for d in skip_domains):
-                    iframe_url = _normalize_url(iframe_url)
-                    if iframe_url and 'http' in iframe_url:
-                        seen.add(iframe_url)
-                        servers.append({"name": "Embed Player", "url": iframe_url, "type": "direct"})
-                        log("Wecima: added iframe embed: {}".format(iframe_url[:80]))
-    
+        log("Wecima: Targeted block not found, running deep scan fallback...")
+        # Look for any data-url that looks like a base64 encoded stream
+        fallback_items = re.findall(r'data-url="([a-zA-Z0-9+/=]{20,})"', html)
+        for encoded_url in fallback_items:
+            decoded_url = _decode_wecima_url(encoded_url)
+            if decoded_url and decoded_url.startswith('http') and decoded_url not in seen:
+                seen.add(decoded_url)
+                servers.append({"name": "Server Fallback", "url": decoded_url, "type": "direct"})
+
     if not servers:
-        log("Wecima: WARNING - no servers found in page")
-        # Debug: log a few btn elements
-        btn_snippet = re.findall(r'<btn[^>]+data-url="[^"]+"', html or "")
-        if btn_snippet:
-            log("Wecima: Found btn elements: {}".format(btn_snippet[:2]))
-    
+        log("Wecima: ERROR - No servers found. The site layout may have changed.")
+    else:
+        log("Wecima: Successfully extracted {} servers".format(len(servers)))
+        
     return servers
 
 
@@ -711,5 +712,48 @@ def get_page(url, m_type=None):
 
 
 def extract_stream(url):
+    """
+    Extract stream URL with proper referer header to avoid 403 errors.
+    Includes fallback in case base_extract_stream doesn't accept referer parameter.
+    """
     from .base import extract_stream as base_extract_stream
-    return base_extract_stream(url)
+    
+    # Add referer for Wecima to avoid 403 errors on streaming URLs
+    referer = _get_base()
+    
+    # Try with referer first (preferred method)
+    try:
+        result = base_extract_stream(url, referer=referer)
+        # Check if result is valid (has URL as first element)
+        if result and result[0]:
+            log("Wecima: extract_stream success with referer")
+            return result
+    except TypeError as e:
+        # base_extract_stream doesn't accept referer parameter
+        log("Wecima: base_extract_stream doesn't accept referer, using fallback")
+    except Exception as e:
+        # Other error occurred
+        log("Wecima: extract_stream with referer error: {}".format(str(e)[:50]))
+    
+    # Fallback to no referer parameter
+    try:
+        result = base_extract_stream(url)
+        if result and result[0]:
+            log("Wecima: extract_stream success without referer")
+            return result
+    except Exception as e:
+        log("Wecima: extract_stream fallback failed: {}".format(str(e)[:50]))
+    
+    # Second fallback: Try using the base fetch with referer to get the stream URL
+    try:
+        log("Wecima: attempting direct fetch with referer: {}".format(url))
+        html, final_url = fetch(url, referer=referer)
+        if html and final_url:
+            # If we got a redirect or final URL, return it
+            log("Wecima: direct fetch got: {}".format(final_url[:80]))
+            return final_url, "HD", url
+    except Exception as e:
+        log("Wecima: direct fetch failed: {}".format(str(e)[:50]))
+    
+    log("Wecima: all extract_stream methods failed")
+    return None, None, None
