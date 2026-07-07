@@ -16,16 +16,13 @@ Improvements over previous version:
   - NEW: Added downet.net resolver for Akwam direct MP4s
   - NEW: Added govid.live resolver for faselhd.rip
   - NEW: Added referer support for faselhd.rip and datahowa.asia
-  - FIXED: Latin-1 encoding crashes with clean_url() method
-  - FIXED: WeCima Base64 decoding with b64_fix_decode() method
 """
 
 import re
 import json
 import time
 import random
-import base64
-import urllib.parse
+import base64  # <-- Make sure this is present
 from urllib.request import Request, urlopen, build_opener, HTTPCookieProcessor, HTTPSHandler
 from urllib.parse import urljoin, urlparse, unquote, urlencode, quote_plus
 from urllib.error import URLError, HTTPError
@@ -50,6 +47,7 @@ TIMEOUT = 30
 ACCEPT_ENCODING = "gzip, deflate, br" if brotli is not None else "gzip, deflate"
 
 _opener = None
+_cookiejar = None
 
 
 def log(msg):
@@ -63,112 +61,48 @@ def log(msg):
         pass
 
 
-def clean_url(url):
-    """
-    Prevents Latin-1 errors by encoding Arabic/Special characters.
-    Converts Unicode characters in URL to percent-encoded format.
-    """
-    if not url:
-        return url
-    try:
-        # First unquote to prevent double-encoding
-        url = urllib.parse.unquote(url)
-        # Parse and encode each component
-        parsed = urllib.parse.urlparse(url)
-        
-        # Encode path segments that contain non-ASCII
-        path_segments = []
-        for segment in parsed.path.split('/'):
-            if segment:
-                # Check if segment contains non-ASCII
-                if any(ord(c) > 127 for c in segment):
-                    path_segments.append(urllib.parse.quote(segment.encode('utf-8'), safe=''))
-                else:
-                    path_segments.append(urllib.parse.quote(segment, safe=''))
-            else:
-                path_segments.append('')
-        encoded_path = '/'.join(path_segments)
-        if not encoded_path.startswith('/') and parsed.path.startswith('/'):
-            encoded_path = '/' + encoded_path
-        
-        # Encode query parameters
-        encoded_query = ''
-        if parsed.query:
-            try:
-                query_parts = []
-                for part in parsed.query.split('&'):
-                    if '=' in part:
-                        key, val = part.split('=', 1)
-                        if any(ord(c) > 127 for c in val):
-                            encoded_val = urllib.parse.quote(val.encode('utf-8'), safe='')
-                            query_parts.append(f"{key}={encoded_val}")
-                        else:
-                            query_parts.append(part)
-                    else:
-                        if any(ord(c) > 127 for c in part):
-                            query_parts.append(urllib.parse.quote(part.encode('utf-8'), safe=''))
-                        else:
-                            query_parts.append(part)
-                encoded_query = '&'.join(query_parts)
-            except Exception:
-                encoded_query = parsed.query
-        
-        # Rebuild URL
-        encoded_url = urllib.parse.urlunparse((
-            parsed.scheme,
-            parsed.netloc,
-            encoded_path,
-            parsed.params,
-            encoded_query,
-            parsed.fragment
-        ))
-        return encoded_url
-    except Exception as e:
-        log(f"clean_url error: {e}")
-        return url
-
-
-def b64_fix_decode(data):
-    """
-    Fixes WeCima Base64 strings (padding and spaces).
-    Handles malformed base64 with spaces instead of +, and missing padding.
-    """
-    if not data:
-        return ""
-    try:
-        # Clean the string (WeCima often uses spaces instead of +)
-        data = data.replace(' ', '+')
-        # Remove any newlines or other whitespace
-        data = re.sub(r'\s+', '', data)
-        # Fix Padding (Length must be multiple of 4)
-        missing_padding = len(data) % 4
-        if missing_padding:
-            data += '=' * (4 - missing_padding)
-        # Decode
-        decoded = base64.b64decode(data)
-        # Try UTF-8 first, fallback to latin-1
-        try:
-            return decoded.decode('utf-8')
-        except UnicodeDecodeError:
-            return decoded.decode('latin-1')
-    except Exception as e:
-        log(f"b64_fix_decode error: {e}")
-        return ""
-
-
 def _get_opener():
-    global _opener
+    global _opener, _cookiejar
     if _opener:
         return _opener
-    cj = cookiejar.CookieJar()
+    _cookiejar = cookiejar.CookieJar()
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
     except AttributeError:
         ctx = ssl._create_unverified_context()
-    _opener = build_opener(HTTPCookieProcessor(cj), HTTPSHandler(context=ctx))
+    _opener = build_opener(HTTPCookieProcessor(_cookiejar), HTTPSHandler(context=ctx))
     return _opener
+
+
+def clear_cookies(domain=None):
+    """Clear cookies for this addon's shared session, optionally scoped to
+    a domain substring.
+
+    FIX: this module-level opener/cookiejar can stay alive for as long as
+    the Enigma2 process is running - a plugin/screen restart does NOT
+    necessarily reset it, only a full box reboot does. If a site's backend
+    ever ties AJAX responses (e.g. which episode's servers to return) to a
+    session cookie instead of trusting the post_id sent in the request
+    body, a stale cookie from a much earlier visit could keep pinning
+    every subsequent request to that same old episode/item indefinitely.
+    Call this before starting a fresh item's server-resolution flow to
+    rule that out entirely.
+    """
+    global _cookiejar
+    _get_opener()
+    if _cookiejar is None:
+        return
+    try:
+        if domain:
+            for cookie in list(_cookiejar):
+                if domain in (cookie.domain or ""):
+                    _cookiejar.clear(cookie.domain, cookie.path, cookie.name)
+        else:
+            _cookiejar.clear()
+    except Exception as e:
+        log("clear_cookies error: {}".format(e))
 
 
 def _decode_response_body(raw, info):
@@ -243,19 +177,65 @@ def _decode_response_body(raw, info):
 
 def _encode_unicode_url(url):
     """Encode Unicode characters in URL to percent-encoded format."""
-    return clean_url(url)  # Use the clean_url function
+    try:
+        parsed = urlparse(url)
+        # Encode the path if it contains non-ASCII
+        path_segments = []
+        for segment in parsed.path.split('/'):
+            if segment:
+                # Check if segment contains non-ASCII
+                if any(ord(c) > 127 for c in segment):
+                    path_segments.append(quote_plus(segment.encode('utf-8')))
+                else:
+                    path_segments.append(segment)
+            else:
+                path_segments.append('')
+        encoded_path = '/'.join(path_segments)
+        if not encoded_path.startswith('/'):
+            encoded_path = '/' + encoded_path
+        
+        # Also encode query parameters if needed
+        encoded_query = ''
+        if parsed.query:
+            try:
+                # Parse query string and encode values
+                query_parts = []
+                for part in parsed.query.split('&'):
+                    if '=' in part:
+                        key, val = part.split('=', 1)
+                        if any(ord(c) > 127 for c in val):
+                            query_parts.append(key + '=' + quote_plus(val.encode('utf-8')))
+                        else:
+                            query_parts.append(part)
+                    else:
+                        query_parts.append(part)
+                encoded_query = '&'.join(query_parts)
+            except Exception:
+                encoded_query = parsed.query
+        
+        # Rebuild URL
+        from urllib.parse import urlunparse
+        encoded_url = urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            encoded_path,
+            parsed.params,
+            encoded_query,
+            parsed.fragment
+        ))
+        return encoded_url
+    except Exception:
+        return url
 
 
 def fetch(url, referer=None, extra_headers=None, post_data=None):
     """
     Robust fetch with:
-    - Smart per-domain referer defaults (Updated for Akwam/Wecima)
+    - Smart per-domain referer defaults
     - Auto retry on transient errors (503, timeout, connection reset)
     - Brotli / gzip / deflate decompression
     - Cookie jar (shared session)
     - Unicode URL support (properly encodes Arabic/etc. characters)
-    - FIXED: Latin-1 encoding crashes via clean_url()
-    - FIXED: 403 Forbidden errors via dynamic Sec-Fetch-Site headers
     """
     max_retries = 2
     for attempt in range(max_retries + 1):
@@ -263,9 +243,9 @@ def fetch(url, referer=None, extra_headers=None, post_data=None):
             opener = _get_opener()
             
             # Handle Unicode URLs - encode to percent-encoded format
-            encoded_url = clean_url(url)
+            encoded_url = _encode_unicode_url(url)
             
-            parsed = urllib.parse.urlparse(encoded_url)
+            parsed = urlparse(encoded_url)
             domain = parsed.netloc.lower()
 
             if not referer:
@@ -285,11 +265,11 @@ def fetch(url, referer=None, extra_headers=None, post_data=None):
                 elif "fasel" in domain or "faselhdx" in domain or "fasel-hd" in domain:
                     referer = "https://www.fasel-hd.cam/"
                 # Other sites
-                elif "tv8.egydead" in domain or "egydead" in domain:
-                    referer = "https://tv8.egydead.live/"
+                elif "egydead" in domain:
+                    referer = "{}://{}/".format(parsed.scheme, domain)
                 elif "wecima" in domain or "mycima" in domain:
                     referer = "https://wecima.click/"
-                elif "downet.net" in domain or "akwam" in domain:
+                elif "downet.net" in domain:
                     referer = "https://akwam.com.co/"
                 elif "topcinema" in domain:
                     referer = "https://topcinemaa.com/"
@@ -313,6 +293,12 @@ def fetch(url, referer=None, extra_headers=None, post_data=None):
                     referer = "https://shaaheid4u.rpmvip.com/"
                 elif "upn.one" in domain or "upshare" in domain:
                     referer = "https://shiid4u.upn.one/"
+                # ========  ADD THESE FOUR LINES BELOW ========
+                elif "savefiles.com" in domain or "mxcontent.net" in domain or "delucloud.xyz" in domain or "sprintcdn.com" in domain:
+                    referer = "https://wecima.cx/"
+                elif "tnmr.org" in domain or "aurorafieldnetwork.store" in domain:
+                    referer = "https://wecima.cx/"
+                # =============================================    
                 else:
                     referer = "{}://{}/".format(parsed.scheme, domain)
 
@@ -326,19 +312,31 @@ def fetch(url, referer=None, extra_headers=None, post_data=None):
                 "Upgrade-Insecure-Requests": "1",
                 "Sec-Fetch-Dest": "document",
                 "Sec-Fetch-Mode": "navigate",
-                # CRITICAL UPDATE: Prevent blocks by spoofing site navigation context
-                "Sec-Fetch-Site": "same-origin" if (urlparse(referer).netloc in domain) else "cross-site",
+                "Sec-Fetch-Site": "none",
                 "Sec-Fetch-User": "?1",
             }
-            
-            if any(x in encoded_url.lower() for x in ["ajax", "get__watch", "api/", ".json"]):
+            # FIX: "get__quality__servers/" (arabseed's first AJAX call) only
+            # matched none of the previous substrings ("get__watch" matched
+            # the *second* call, get__watch__server/, but not this one) -
+            # so it was sent with normal document-navigation headers instead
+            # of AJAX headers, causing the server to reject it with a fixed
+            # tiny error payload (consistently 49 bytes in logs) instead of
+            # real per-quality server data.
+            if any(x in encoded_url.lower() for x in ["ajax", "get__watch", "get__quality", "api/", ".json"]):
                 headers.update({
                     "X-Requested-With": "XMLHttpRequest",
                     "Accept": "application/json, text/javascript, */*; q=0.01",
+                    # FIX: different episodes were getting back identical
+                    # responses for these endpoints - matches an
+                    # intermediate cache keying on URL alone and ignoring
+                    # the POST body (post_id). Explicitly forbid caching,
+                    # on top of the per-request cache-busting query param
+                    # arabseed.py now adds to these same URLs.
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
                     "Sec-Fetch-Dest": "empty",
                     "Sec-Fetch-Mode": "cors",
                 })
-            
             if extra_headers:
                 headers.update(extra_headers)
 
@@ -350,7 +348,7 @@ def fetch(url, referer=None, extra_headers=None, post_data=None):
                 if isinstance(data, str):
                     data = data.encode("utf-8")
 
-            log("Fetching (attempt {}): {}".format(attempt + 1, encoded_url[:150]))
+            log("Fetching (attempt {}): {}".format(attempt + 1, encoded_url))
             req = Request(encoded_url, headers=headers, data=data)
 
             with opener.open(req, timeout=TIMEOUT) as resp:
@@ -397,7 +395,7 @@ def fetch(url, referer=None, extra_headers=None, post_data=None):
             # Try with manual encoding
             try:
                 # Fallback: try to encode the URL explicitly
-                encoded_url = clean_url(url)
+                encoded_url = url.encode('utf-8').decode('ascii', errors='ignore')
                 if encoded_url != url:
                     log("Retrying with encoded URL: {}".format(encoded_url))
                     return fetch(encoded_url, referer, extra_headers, post_data)
@@ -414,6 +412,27 @@ def fetch(url, referer=None, extra_headers=None, post_data=None):
             return None, url
 
     return None, url
+
+
+def fetch_json(url, referer=None, extra_headers=None, post_data=None):
+    """
+    Fetch a URL and parse the response body as JSON.
+
+    Every extractor generated by build_extractor.py imports this
+    (`from .base import log, fetch, resolve_iframe_chain, fetch_json`)
+    to hit detected API endpoints. Returns a dict/list on success, or
+    None on failure (network error or invalid JSON) — callers use
+    `data = fetch_json(...)` then `data.get(...)`, mirroring fetch()'s
+    "return None on failure" convention.
+    """
+    html, _ = fetch(url, referer=referer, extra_headers=extra_headers, post_data=post_data)
+    if not html:
+        return None
+    try:
+        return json.loads(html)
+    except (ValueError, TypeError) as e:
+        log("fetch_json: failed to parse JSON from {}: {}".format(url, e))
+        return None
 
 
 # ─── HTML helpers ─────────────────────────────────────────────────────────────
@@ -451,7 +470,7 @@ def find_m3u8(html):
             if url.startswith("//"):
                 url = "https:" + url
             if url.startswith("http") and ".m3u8" in url:
-                return clean_url(url)  # Clean before returning
+                return url
     return None
 
 
@@ -470,7 +489,7 @@ def find_mp4(html):
             if url.startswith("//"):
                 url = "https:" + url
             if url.startswith("http") and ".mp4" in url:
-                return clean_url(url)  # Clean before returning
+                return url
     return None
 
 
@@ -528,7 +547,7 @@ def _best_media_url(text):
     if not candidates:
         return None
     candidates.sort(reverse=True)
-    return clean_url(candidates[0][1])  # Clean before returning
+    return candidates[0][1]
 
 
 # ─── Packer / obfuscation ─────────────────────────────────────────────────────
@@ -653,22 +672,21 @@ def resolve_streamtape(url):
             link = m.group(1) + m.group(2)
             if not link.startswith("http"):
                 link = "https:" + link
-            return clean_url(link.replace("//streamtape.com", "https://streamtape.com"))
+            return link.replace("//streamtape.com", "https://streamtape.com")
 
         # Pattern 2: single innerHTML assignment
         m = re.search(r"robotlink\)\.innerHTML\s*=\s*['\"]([^'\"]+)['\"]", html)
         if m:
             link = m.group(1)
-            return clean_url(("https:" + link) if link.startswith("//") else link)
+            return ("https:" + link) if link.startswith("//") else link
 
         # Pattern 3: /get_video?... inside JS
         m = re.search(r'(/get_video\?[^"\'&\s]+)', html)
         if m:
-            return clean_url("https://streamtape.com" + m.group(1))
+            return "https://streamtape.com" + m.group(1)
 
         # Pattern 4: direct mp4 URL
-        res = find_mp4(html)
-        return clean_url(res) if res else None
+        return find_mp4(html)
     except Exception:
         pass
     return None
@@ -719,10 +737,9 @@ def resolve_doodstream(url):
         chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
         rand = "".join(random.choice(chars) for _ in range(10))
         token = pass_path.split("/")[-1]
-        result = "{}{}&token={}&expiry={}".format(
+        return "{}{}&token={}&expiry={}".format(
             token_html.strip(), rand, token, int(time.time() * 1000)
         )
-        return clean_url(result) if result else None
     except Exception:
         pass
     return None
@@ -733,8 +750,7 @@ def resolve_vidbom(url):
         html, _ = fetch(url, referer=url)
         if not html:
             return None
-        res = find_m3u8(html) or find_mp4(html) or find_packed_links(html)
-        return clean_url(res) if res else None
+        return find_m3u8(html) or find_mp4(html) or find_packed_links(html)
     except Exception:
         pass
     return None
@@ -747,9 +763,8 @@ def resolve_uqload(url):
             return None
         m = re.search(r'sources:\s*\["([^"]+)"\]', html)
         if m:
-            return clean_url(m.group(1))
-        res = find_m3u8(html) or find_mp4(html)
-        return clean_url(res) if res else None
+            return m.group(1)
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
         pass
     return None
@@ -761,7 +776,7 @@ def resolve_govid(url):
         # If it's already a m3u8, return it
         if '.m3u8' in url:
             log("resolve_govid: direct m3u8 URL")
-            return clean_url(url)
+            return url
         
         html, _ = fetch(url, referer="https://faselhd.rip/")
         if not html:
@@ -771,10 +786,9 @@ def resolve_govid(url):
         m3u8 = find_m3u8(html)
         if m3u8:
             log("resolve_govid: found m3u8: {}".format(m3u8[:80]))
-            return clean_url(m3u8)
+            return m3u8
         
-        mp4 = find_mp4(html)
-        return clean_url(mp4) if mp4 else None
+        return find_mp4(html)
     except Exception:
         pass
     return None
@@ -785,8 +799,7 @@ def resolve_upstream(url):
         html, _ = fetch(url, referer=url)
         if not html:
             return None
-        res = find_m3u8(html) or find_mp4(html)
-        return clean_url(res) if res else None
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
         pass
     return None
@@ -801,15 +814,13 @@ def resolve_mixdrop(url):
         m = re.search(r'MDCore\.wurl\s*=\s*"([^"]+)"', html)
         if m:
             link = m.group(1)
-            res = ("https:" + link) if link.startswith("//") else link
-            return clean_url(res)
+            return ("https:" + link) if link.startswith("//") else link
         # Packed JS
         for txt in _unpack_all(html):
             m = re.search(r'MDCore\.wurl\s*=\s*"([^"]+)"', txt)
             if m:
                 link = m.group(1)
-                res = ("https:" + link) if link.startswith("//") else link
-                return clean_url(res)
+                return ("https:" + link) if link.startswith("//") else link
     except Exception:
         pass
     return None
@@ -831,15 +842,16 @@ def resolve_voe(url):
         ]:
             m = re.search(pat, html, re.I)
             if m:
-                return clean_url(m.group(1).replace("\\/", "/"))
+                return m.group(1).replace("\\/", "/")
 
         # Layer 2: base64 atob() blobs
+        import base64
         for enc in re.finditer(r'atob\([\'"]([A-Za-z0-9+/=]+)[\'"]\)', html):
             try:
-                dec = b64_fix_decode(enc.group(1) + "==")
+                dec = base64.b64decode(enc.group(1) + "==").decode("utf-8", errors="ignore")
                 mm = re.search(r'(https?://[^\s\'"<>]+\.m3u8[^\s\'"<>]*)', dec)
                 if mm:
-                    return clean_url(mm.group(1))
+                    return mm.group(1)
             except Exception:
                 pass
 
@@ -847,10 +859,27 @@ def resolve_voe(url):
         for txt in _unpack_all(html):
             best = _best_media_url(txt)
             if best:
-                return clean_url(best)
+                return best
 
-        res = find_m3u8(html) or find_mp4(html)
-        return clean_url(res) if res else None
+        direct = find_m3u8(html) or find_mp4(html)
+        if direct:
+            return direct
+
+        # Layer 4: voe.sx sometimes wraps a completely different, randomly
+        # named domain via a nested iframe instead of embedding the stream
+        # on its own page (confirmed via a real captured session - the
+        # same "wrapper embeds unrelated domain" pattern already seen with
+        # hgcloud.to). If nothing was found directly above, follow any
+        # iframe pointing elsewhere and try resolving that instead.
+        for embed_url in re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I):
+            if not embed_url.startswith('http') or 'voe.sx' in embed_url:
+                continue
+            log("voe: Found wrapped embed iframe: {}".format(embed_url))
+            result = resolve_host(embed_url)
+            if result:
+                return result
+
+        return None
     except Exception:
         pass
     return None
@@ -863,51 +892,82 @@ def resolve_streamruby(url):
             return None
         res = find_m3u8(html) or find_mp4(html)
         if res:
-            return clean_url(res)
+            return res
         for txt in _unpack_all(html):
             res = find_m3u8(txt) or find_mp4(txt)
             if res:
-                return clean_url(res)
+                return res
     except Exception:
         pass
     return None
 
 
 def resolve_hgcloud(url):
-    """hgcloud.to - redirects to masukestin.com or other host"""
+    """hgcloud.to acts as a wrapper that embeds a backend video host inside
+    a nested iframe. Which host it embeds is NOT fixed - masukestin.com and
+    vibuxer.com have both been observed in practice (confirmed via a real
+    captured session). The masukestin-specific checks are kept as-is since
+    they're proven to work for that host's exact URL shape; the generic
+    checks below are added as additional fallbacks for whatever other
+    backend hgcloud.to happens to be using, instead of returning None for
+    anything that isn't masukestin."""
     try:
         html, final_url = fetch(url, referer="https://hgcloud.to/")
         if not html:
             return None
-        
+
+        from .base import resolve_host
+
         # Check if there's an iframe pointing to masukestin.com
         iframe_match = re.search(r'<iframe[^>]+src=["\']([^"\']+masukestin\.com[^"\']+)["\']', html, re.I)
         if iframe_match:
             embed_url = iframe_match.group(1)
             log("hgcloud: Found masukestin embed: {}".format(embed_url))
-            # Resolve the masukestin URL
-            from .base import resolve_host
-            return resolve_host(embed_url)
-        
+            result = resolve_host(embed_url)
+            if result:
+                return result
+
         # Check for meta refresh redirect
         meta_refresh = re.search(r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\']\d+;\s*url=([^"\']+)["\']', html, re.I)
         if meta_refresh:
             redirect_url = meta_refresh.group(1)
             if "masukestin" in redirect_url:
                 log("hgcloud: Redirecting to masukestin: {}".format(redirect_url))
-                from .base import resolve_host
-                return resolve_host(redirect_url)
-        
+                result = resolve_host(redirect_url)
+                if result:
+                    return result
+
         # Check if the page has JavaScript that loads masukestin
         if "masukestin" in html:
             masukestin_urls = re.findall(r'(https?://masukestin\.com/[^\s"\']+)', html)
             for masukestin_url in masukestin_urls:
                 log("hgcloud: Found masukestin URL: {}".format(masukestin_url))
-                from .base import resolve_host
                 result = resolve_host(masukestin_url)
                 if result:
-                    return clean_url(result) if result else None
-        
+                    return result
+
+        # Fallback for any OTHER backend (e.g. vibuxer.com) that hgcloud.to
+        # might be embedding instead of masukestin: any iframe pointing
+        # somewhere other than hgcloud.to itself.
+        for embed_url in re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I):
+            if not embed_url.startswith('http') or 'hgcloud.to' in embed_url or 'masukestin.com' in embed_url:
+                continue
+            log("hgcloud: Found non-masukestin embed iframe: {}".format(embed_url))
+            result = resolve_host(embed_url)
+            if result:
+                return result
+
+        # Same idea, but for an embed URL referenced directly in inline JS
+        # rather than sitting in an <iframe> tag - matches a generic
+        # "<host>/e/<id>" or "<host>/v/<id>" embed-URL shape.
+        for embed_url in re.findall(r'(https?://[a-z0-9.-]+\.[a-z]{2,}/[ev]/[a-zA-Z0-9]+)', html, re.I):
+            if 'hgcloud.to' in embed_url or 'masukestin.com' in embed_url:
+                continue
+            log("hgcloud: Found non-masukestin embed URL in page script: {}".format(embed_url))
+            result = resolve_host(embed_url)
+            if result:
+                return result
+
         return None
     except Exception as e:
         log("resolve_hgcloud error: {}".format(e))
@@ -924,15 +984,14 @@ def resolve_vidtube(url):
             return None
         best = _best_media_url(html)
         if best:
-            return clean_url(best)
+            return best
         for txt in _unpack_all(html):
             best = _best_media_url(txt)
             if best:
-                return clean_url(best)
+                return best
     except Exception:
         pass
     return None
-
 
 def resolve_masukestin(url):
     """masukestin.com - extracts m3u8 video URL from embed page"""
@@ -960,7 +1019,7 @@ def resolve_masukestin(url):
                     stream_url = "https:" + stream_url
                 if ".m3u8" in stream_url:
                     log("masukestin: Found m3u8 stream: {}".format(stream_url[:80]))
-                    return clean_url(stream_url)
+                    return stream_url
 
         # Look in script tags
         script_tags = re.findall(r'<script[^>]*>(.*?)</script>', html, re.S | re.I)
@@ -971,7 +1030,7 @@ def resolve_masukestin(url):
                     stream_url = match.group(1)
                     if ".m3u8" in stream_url:
                         log("masukestin: Found m3u8 in script: {}".format(stream_url[:80]))
-                        return clean_url(stream_url)
+                        return stream_url
 
         # Look for base64 encoded URLs
         b64_patterns = [
@@ -981,11 +1040,12 @@ def resolve_masukestin(url):
         for pattern in b64_patterns:
             for match in re.findall(pattern, html):
                 try:
-                    decoded = b64_fix_decode(match)
+                    import base64
+                    decoded = base64.b64decode(match).decode('utf-8')
                     stream_match = re.search(r'(https?://masukestin\.com/stream/[^\s"\']+\.m3u8[^\s"\']*)', decoded)
                     if stream_match:
                         log("masukestin: Found m3u8 in base64: {}".format(stream_match.group(1)[:80]))
-                        return clean_url(stream_match.group(1))
+                        return stream_match.group(1)
                 except:
                     pass
 
@@ -994,7 +1054,6 @@ def resolve_masukestin(url):
     except Exception as e:
         log("resolve_masukestin error: {}".format(e))
         return None
-
 
 # ── NEW resolvers ──────────────────────────────────────────────────────────────
 
@@ -1011,16 +1070,15 @@ def resolve_streamwish(url):
         # Try direct patterns first (fastest)
         best = _best_media_url(html)
         if best:
-            return clean_url(best)
+            return best
 
         # Packed JS (all these sites heavily pack their JS)
         for txt in _unpack_all(html):
             best = _best_media_url(txt)
             if best:
-                return clean_url(best)
+                return best
 
-        res = find_m3u8(html) or find_mp4(html)
-        return clean_url(res) if res else None
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
         pass
     return None
@@ -1039,26 +1097,26 @@ def resolve_filemoon(url):
         # Direct scan first
         best = _best_media_url(html)
         if best:
-            return clean_url(best)
+            return best
 
         # Unpack all eval blocks
         for txt in _unpack_all(html):
             best = _best_media_url(txt)
             if best:
-                return clean_url(best)
+                return best
 
         # base64 blobs
-        for b64_str in re.findall(r'atob\(["\']([A-Za-z0-9+/=]{40,})["\']\)', html, re.I):
+        import base64
+        for b64 in re.findall(r'atob\(["\']([A-Za-z0-9+/=]{40,})["\']\)', html, re.I):
             try:
-                dec = b64_fix_decode(b64_str)
+                dec = base64.b64decode(b64 + "==").decode("utf-8", "ignore")
                 best = _best_media_url(dec)
                 if best:
-                    return clean_url(best)
+                    return best
             except Exception:
                 pass
 
-        res = find_m3u8(html) or find_mp4(html)
-        return clean_url(res) if res else None
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
         pass
     return None
@@ -1079,15 +1137,14 @@ def resolve_lulustream(url):
 
         best = _best_media_url(html)
         if best:
-            return clean_url(best)
+            return best
 
         for txt in _unpack_all(html):
             best = _best_media_url(txt)
             if best:
-                return clean_url(best)
+                return best
 
-        res = find_m3u8(html) or find_mp4(html)
-        return clean_url(res) if res else None
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
         pass
     return None
@@ -1123,12 +1180,12 @@ def resolve_okru(url):
                 data = json.loads(body)
                 hls = data.get("hlsManifestUrl", "")
                 if hls:
-                    return clean_url(hls.replace("\\u0026", "&").replace("\\/", "/"))
+                    return hls.replace("\\u0026", "&").replace("\\/", "/")
                 # Fallback: videos array
                 for vid in (data.get("videos") or []):
                     u = vid.get("url") or ""
                     if u.startswith("http"):
-                        return clean_url(u.replace("\\u0026", "&").replace("\\/", "/"))
+                        return u.replace("\\u0026", "&").replace("\\/", "/")
             except Exception:
                 pass
 
@@ -1139,10 +1196,10 @@ def resolve_okru(url):
         if html:
             best = _best_media_url(html)
             if best:
-                return clean_url(best)
+                return best
             m2 = re.search(r'"hlsManifestUrl"\s*:\s*"([^"]+)"', html)
             if m2:
-                return clean_url(m2.group(1).replace("\\u0026", "&").replace("\\/", "/"))
+                return m2.group(1).replace("\\u0026", "&").replace("\\/", "/")
     except Exception:
         pass
     return None
@@ -1166,26 +1223,26 @@ def resolve_vidguard(url):
             m = re.search(pat, html, re.I)
             if m:
                 u = m.group(1).replace("\\/", "/").replace("\\u0026", "&")
-                return clean_url(u)
+                return u
 
         # Packed JS
         for txt in _unpack_all(html):
             best = _best_media_url(txt)
             if best:
-                return clean_url(best)
+                return best
 
         # base64 decode attempts
-        for b64_str in re.findall(r'atob\(["\']([A-Za-z0-9+/=]{40,})["\']\)', html, re.I):
+        import base64
+        for b64 in re.findall(r'atob\(["\']([A-Za-z0-9+/=]{40,})["\']\)', html, re.I):
             try:
-                dec = b64_fix_decode(b64_str)
+                dec = base64.b64decode(b64 + "==").decode("utf-8", "ignore")
                 best = _best_media_url(dec)
                 if best:
-                    return clean_url(best)
+                    return best
             except Exception:
                 pass
 
-        res = find_m3u8(html) or find_mp4(html)
-        return clean_url(res) if res else None
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
         pass
     return None
@@ -1224,19 +1281,19 @@ def resolve_fastvid(url):
         for url in found_urls:
             if 'master.m3u8' in url:
                 log(f"resolve_fastvid: found master.m3u8: {url}")
-                return clean_url(url)
+                return url
         for url in found_urls:
             if 'index-f2' in url:  # 720p
                 log(f"resolve_fastvid: found 720p stream: {url}")
-                return clean_url(url)
+                return url
         for url in found_urls:
             if 'index-f1' in url:  # 480p
                 log(f"resolve_fastvid: found 480p stream: {url}")
-                return clean_url(url)
+                return url
         for url in found_urls:
             if '.m3u8' in url:
                 log(f"resolve_fastvid: found m3u8: {url}")
-                return clean_url(url)
+                return url
         
         # Also check for JWPlayer configuration
         jw_pattern = r'file:\s*["\']([^"\']+\.m3u8[^"\']*)["\']'
@@ -1247,7 +1304,7 @@ def resolve_fastvid(url):
                 parsed = urlparse(final_url or url)
                 stream_url = f"{parsed.scheme}://{parsed.netloc}{stream_url}"
             log(f"resolve_fastvid: found JWPlayer stream: {stream_url}")
-            return clean_url(stream_url)
+            return stream_url
         
         return None
     except Exception as e:
@@ -1261,29 +1318,27 @@ def resolve_rpmvip(url):
     """rpmvip.com - direct m3u8 URLs"""
     # These are already direct m3u8 URLs
     if '.m3u8' in url:
-        return clean_url(url)
+        return url
     try:
         html, _ = fetch(url, referer=url)
         if not html:
             return None
-        res = find_m3u8(html) or find_mp4(html)
-        return clean_url(res) if res else None
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
-        return clean_url(url) if '.m3u8' in url else None
+        return url if '.m3u8' in url else None
 
 
 def resolve_upshare(url):
     """upshare / upn.one - direct m3u8 URLs"""
     if '.m3u8' in url:
-        return clean_url(url)
+        return url
     try:
         html, _ = fetch(url, referer=url)
         if not html:
             return None
-        res = find_m3u8(html) or find_mp4(html)
-        return clean_url(res) if res else None
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
-        return clean_url(url) if '.m3u8' in url else None
+        return url if '.m3u8' in url else None
 
 
 def resolve_cleantechworld(url):
@@ -1294,11 +1349,11 @@ def resolve_cleantechworld(url):
             return None
         # If it returns m3u8 content directly, it's already a stream
         if "#EXTM3U" in html:
-            return clean_url(url)
+            return url
         # Otherwise look for m3u8 in the response
         m = re.search(r'(https?://[^\s"\']+\.m3u8[^\s"\']*)', html)
         if m:
-            return clean_url(m.group(1))
+            return m.group(1)
         return None
     except Exception as e:
         log(f"resolve_cleantechworld error: {e}")
@@ -1313,7 +1368,7 @@ def resolve_scdns(url):
         # If it's already a direct m3u8 URL, return it
         if '.m3u8' in url:
             log("resolve_scdns: direct m3u8 URL")
-            return clean_url(url)
+            return url
         
         # Fetch the page to get the actual stream
         html, final_url = fetch(url, referer="https://www.fasel-hd.cam/")
@@ -1333,16 +1388,16 @@ def resolve_scdns(url):
                     # Prefer higher quality streams
                     if 'hd1080' in stream_url or '1080' in stream_url:
                         log("resolve_scdns: found 1080p stream")
-                        return clean_url(stream_url)
+                        return stream_url
                     elif 'hd720' in stream_url or '720' in stream_url:
                         log("resolve_scdns: found 720p stream")
-                        return clean_url(stream_url)
+                        return stream_url
             
             # Also try to find any m3u8 using the generic finder
             stream = find_m3u8(html)
             if stream:
                 log("resolve_scdns: found m3u8 via generic finder")
-                return clean_url(stream)
+                return stream
         
         return None
     except Exception as e:
@@ -1360,18 +1415,18 @@ def resolve_datahowa(url):
             base_m3u8 = re.sub(r'/seg_[0-9]+\.ts.*$', '/playlist.m3u8', url)
             if base_m3u8 != url:
                 log("resolve_datahowa: converting segment to playlist: {}".format(base_m3u8[:80]))
-                return clean_url(base_m3u8)
+                return base_m3u8
         
         # If it's already a m3u8, return it
         if '.m3u8' in url:
-            return clean_url(url)
+            return url
         
         # Fetch to get actual stream
         html, _ = fetch(url, referer="https://faselhd.rip/")
         if html:
             m3u8 = find_m3u8(html)
             if m3u8:
-                return clean_url(m3u8)
+                return m3u8
         
         return None
     except Exception as e:
@@ -1391,14 +1446,14 @@ def resolve_downet(url):
                 q = "1080p"
             elif "720" in url:
                 q = "720p"
-            return clean_url(url)
+            return url
         
         # Fetch to get actual stream
         html, _ = fetch(url, referer="https://akwam.com.co/")
         if html:
             mp4 = find_mp4(html) or find_m3u8(html)
             if mp4:
-                return clean_url(mp4)
+                return mp4
         
         return None
     except Exception as e:
@@ -1417,9 +1472,8 @@ def resolve_tnmr(url):
         # Look for master.m3u8 or direct stream
         m = re.search(r'(https?://[^\s"\']+\.tnmr\.org[^\s"\']+\.m3u8[^\s"\']*)', html)
         if m:
-            return clean_url(m.group(1))
-        res = find_m3u8(html) or find_mp4(html)
-        return clean_url(res) if res else None
+            return m.group(1)
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
         return None
 
@@ -1429,11 +1483,10 @@ def resolve_mxcontent(url):
     try:
         # Direct MP4 URL - just return it
         if '.mp4' in url:
-            return clean_url(url)
+            return url
         html, _ = fetch(url, referer="https://wecima.cx/")
         if html:
-            mp4 = find_mp4(html)
-            return clean_url(mp4) if mp4 else None
+            return find_mp4(html)
     except Exception:
         return None
 
@@ -1447,9 +1500,8 @@ def resolve_delucloud(url):
         # Look for master.m3u8
         m = re.search(r'(https?://[^\s"\']+\.delucloud\.xyz[^\s"\']+\.m3u8[^\s"\']*)', html)
         if m:
-            return clean_url(m.group(1))
-        m3u8 = find_m3u8(html)
-        return clean_url(m3u8) if m3u8 else None
+            return m.group(1)
+        return find_m3u8(html)
     except Exception:
         return None
 
@@ -1462,9 +1514,8 @@ def resolve_savefiles(url):
             return None
         m = re.search(r'(https?://s[0-9]+\.savefiles\.com[^\s"\']+\.m3u8[^\s"\']*)', html)
         if m:
-            return clean_url(m.group(1))
-        m3u8 = find_m3u8(html)
-        return clean_url(m3u8) if m3u8 else None
+            return m.group(1)
+        return find_m3u8(html)
     except Exception:
         return None
 
@@ -1475,8 +1526,7 @@ def resolve_sprintcdn(url):
         html, _ = fetch(url, referer="https://wecima.cx/")
         if not html:
             return None
-        m3u8 = find_m3u8(html)
-        return clean_url(m3u8) if m3u8 else None
+        return find_m3u8(html)
     except Exception:
         return None
 
@@ -1494,9 +1544,24 @@ def resolve_aurorafieldnetwork(url):
             if content:
                 m = re.search(r'(https?://[^\s"\']+\.m3u8[^\s"\']*)', content)
                 if m:
-                    return clean_url(m.group(1))
-        m3u8 = find_m3u8(html)
-        return clean_url(m3u8) if m3u8 else None
+                    return m.group(1)
+        return find_m3u8(html)
+    except Exception:
+        return None
+
+# ========== END: Wecima CDN Resolvers ==========
+
+def resolve_savefiles(url):
+    """savefiles.com - HLS stream resolver"""
+    try:
+        html, _ = fetch(url, referer="https://savefiles.com/")
+        if not html:
+            return None
+        # Look for m3u8 in the page
+        m = re.search(r'(https?://[^\s"\']+\.savefiles\.com[^\s"\']+\.m3u8[^\s"\']*)', html)
+        if m:
+            return m.group(1)
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
         return None
 
@@ -1507,8 +1572,7 @@ def resolve_abstream(url):
         html, _ = fetch(url, referer="https://abstream.to/")
         if not html:
             return None
-        m3u8 = find_m3u8(html) or find_mp4(html)
-        return clean_url(m3u8) if m3u8 else None
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
         return None
 
@@ -1522,13 +1586,12 @@ def resolve_byselapuix(url):
         # Use filemoon resolver logic
         best = _best_media_url(html)
         if best:
-            return clean_url(best)
+            return best
         for txt in _unpack_all(html):
             best = _best_media_url(txt)
             if best:
-                return clean_url(best)
-        res = find_m3u8(html) or find_mp4(html)
-        return clean_url(res) if res else None
+                return best
+        return find_m3u8(html) or find_mp4(html)
     except Exception:
         return None
 
@@ -1540,8 +1603,7 @@ def resolve_dhcplay(url):
         return resolve_doodstream(url)
     except Exception:
         return None
-
-
+    
 # Add after existing resolvers, before HOST_RESOLVERS
 
 def resolve_go_akwam(url):
@@ -1555,12 +1617,12 @@ def resolve_go_akwam(url):
         # Pattern 1: video source tag
         source_match = re.search(r'<source[^>]+src="([^"]+\.(?:mp4|m3u8)[^"]*)"', html, re.I)
         if source_match:
-            return clean_url(source_match.group(1))
+            return source_match.group(1)
         
         # Pattern 2: downet.net direct URL
         downet_match = re.search(r'(https?://s\d+\.downet\.net[^\s"\']+\.(?:mp4|m3u8)[^\s"\']*)', html, re.I)
         if downet_match:
-            return clean_url(downet_match.group(1))
+            return downet_match.group(1)
         
         # Pattern 3: meta refresh
         meta_match = re.search(r'<meta[^>]+http-equiv="refresh"[^>]+content="\d+;\s*url=([^"]+)"', html, re.I)
@@ -1582,6 +1644,35 @@ def resolve_go_akwam(url):
         return None
     except Exception as e:
         log("resolve_go_akwam error: {}".format(e))
+        return None
+
+
+def resolve_abstream(url):
+    """abstream.to - HLS stream resolver for Akwam/Wecima"""
+    try:
+        html, _ = fetch(url, referer="https://abstream.to/")
+        if not html:
+            return None
+        # Look for video source or m3u8
+        source_match = re.search(r'<source[^>]+src="([^"]+\.(?:mp4|m3u8)[^"]*)"', html, re.I)
+        if source_match:
+            return source_match.group(1)
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        return None
+
+
+def resolve_savefiles_akwam(url):
+    """savefiles.com - HLS stream resolver for Akwam"""
+    try:
+        html, _ = fetch(url, referer="https://savefiles.com/")
+        if not html:
+            return None
+        m = re.search(r'(https?://s[0-9]+\.savefiles\.com[^\s"\']+\.m3u8[^\s"\']*)', html)
+        if m:
+            return m.group(1)
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
         return None
 
 
@@ -1635,12 +1726,12 @@ HOST_RESOLVERS = {
     "cleantechworld.shop": resolve_cleantechworld,
     
     # ========== FaselHD CDN Resolvers (NEW) ==========
-    "scdns":              resolve_scdns,
+    "scdns":              resolve_scdns,        # For web5106x.faselhdx.bid
     "scdns.io":           resolve_scdns,
     "c.scdns.io":         resolve_scdns,
-    "datahowa":           resolve_datahowa,
+    "datahowa":           resolve_datahowa,     # For faselhd.rip streams
     "datahowa.asia":      resolve_datahowa,
-    "govid.live":         resolve_govid,
+    "govid.live":         resolve_govid,        # For faselhd.rip
     
     # ========== Akwam Resolvers (NEW) ==========
     "downet":             resolve_downet,
@@ -1680,18 +1771,18 @@ def resolve_generic_embed(url):
             return None
         best = _best_media_url(html)
         if best:
-            return clean_url(best)
+            return best
         for txt in _unpack_all(html):
             best = _best_media_url(txt)
             if best:
-                return clean_url(best)
+                return best
         # Follow one level of iframes
         for iframe_url in extract_iframes(html, final or url)[:3]:
             h2, _ = fetch(iframe_url, referer=url)
             if h2:
                 best = _best_media_url(h2)
                 if best:
-                    return clean_url(best)
+                    return best
     except Exception:
         pass
     return None
@@ -1710,15 +1801,14 @@ def _get_stream_moviesapi(tmdb_id, m_type, season=None, episode=None):
         for src in (data.get("sources") or []):
             f = src.get("file") or src.get("url") or ""
             if ".m3u8" in f:
-                return clean_url(f)
+                return f
         for src in (data.get("sources") or []):
             f = src.get("file") or src.get("url") or ""
             if f.startswith("http"):
-                return clean_url(f)
+                return f
     except Exception:
         pass
-    res = find_m3u8(body) or find_mp4(body)
-    return clean_url(res) if res else None
+    return find_m3u8(body) or find_mp4(body)
 
 
 def _get_stream_vidsrc(tmdb_id, m_type, season=None, episode=None):
@@ -1734,10 +1824,8 @@ def _get_stream_vidsrc(tmdb_id, m_type, season=None, episode=None):
             iframe_url = "https:" + iframe_url
         h2, _ = fetch(iframe_url, referer=url)
         if h2:
-            res = find_m3u8(h2) or find_mp4(h2)
-            return clean_url(res) if res else None
-    res = find_m3u8(html) or find_mp4(html)
-    return clean_url(res) if res else None
+            return find_m3u8(h2) or find_mp4(h2)
+    return find_m3u8(html) or find_mp4(html)
 
 
 def _get_stream_autoembed(tmdb_id, m_type, season=None, episode=None):
@@ -1746,8 +1834,7 @@ def _get_stream_autoembed(tmdb_id, m_type, season=None, episode=None):
     html, _ = fetch(url)
     if not html:
         return None
-    res = find_m3u8(html) or find_mp4(html)
-    return clean_url(res) if res else None
+    return find_m3u8(html) or find_mp4(html)
 
 
 _PREMIUM_METHODS = {
@@ -1795,13 +1882,12 @@ def resolve_host(url, referer=None):
             log("Using resolver: {}".format(key))
             result = resolver(url)
             if result:
-                return clean_url(result)  # Clean before returning
+                return result
             log("Resolver {} returned nothing, trying generic".format(key))
             break
 
     log("Generic fallback for: {}".format(domain))
-    result = resolve_generic_embed(url)
-    return clean_url(result) if result else None
+    return resolve_generic_embed(url)
 
 
 # ─── iframe chain resolver ────────────────────────────────────────────────────
@@ -1824,7 +1910,7 @@ def resolve_iframe_chain(url, referer=None, depth=0, max_depth=8):
     # 1. Direct media URL in page
     stream = find_m3u8(html) or find_mp4(html) or find_packed_links(html)
     if stream:
-        return clean_url(stream), domain
+        return stream, domain
 
     # 2. Meta-refresh redirect
     m = re.search(
@@ -1875,12 +1961,12 @@ def resolve_iframe_chain(url, referer=None, depth=0, max_depth=8):
             if key in src_domain:
                 result = resolver(src)
                 if result:
-                    return clean_url(result), src_domain
+                    return result, src_domain
                 break
 
         res, h = resolve_iframe_chain(src, referer=active_url, depth=depth + 1, max_depth=max_depth)
         if res:
-            return clean_url(res), h
+            return res, h
 
     return None, ""
 
@@ -1892,7 +1978,7 @@ def extract_stream(url):
     Standard entry point used by all extractors.
     Returns (stream_url, quality_label, referer).
     """
-    log("--- extract_stream START: {} ---".format(url[:150]))
+    log("--- extract_stream START: {} ---".format(url))
     raw_url = (url or "").strip()
     if not raw_url:
         return None, "", url
@@ -1937,8 +2023,8 @@ def extract_stream(url):
         elif "master.m3u8" in lower:
             q = "720p"
             
-        log("extract_stream DIRECT: {}".format(main_url[:120]))
-        return clean_url(main_url), q, ref
+        log("extract_stream DIRECT: {}".format(main_url))
+        return main_url, q, ref
 
     # Fetch to get final URL (for redirects)
     _, final_ref = fetch(main_url, referer=piped_headers.get("Referer"))
@@ -1952,9 +2038,6 @@ def extract_stream(url):
         stream, _ = resolve_iframe_chain(main_url, referer=piped_headers.get("Referer"))
 
     if stream:
-        # Clean the stream URL
-        stream = clean_url(stream)
-        
         # Detect quality from stream URL
         q = "HD"
         stream_lower = stream.lower()
@@ -1972,5 +2055,5 @@ def extract_stream(url):
         log("extract_stream SUCCESS: {} ({})".format(stream[:120], q))
         return stream, q, final_ref or main_url
 
-    log("extract_stream FAILED for: {}".format(main_url[:120]))
+    log("extract_stream FAILED for: {}".format(main_url))
     return None, "", final_ref or main_url

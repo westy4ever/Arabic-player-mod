@@ -78,7 +78,7 @@ def _looks_like_wecima_page(html):
         or "NavigationMenu" in text
         or "Thumb--GridItem" in text
         or "GridItem" in text
-        or "List--Servers" in text  # New server list container
+        or "List--Servers" in text  # Keep for compatibility
         or "WECIMA" in text
         or "وى سيما" in text
         or "wecima" in text.lower()
@@ -327,76 +327,77 @@ def _category_from_home(label, fallback):
 
 def _decode_wecima_url(encoded):
     """
-    Decode Wecima's obfuscated URLs.
-    
-    Steps:
-    1. Clean the string - replace spaces with '+'
-    2. Fix padding - add '=' if needed
-    3. Base64 decode
-    4. Apply URL quoting (Akwam fix) for Arabic characters
+    Decode Wecima's obfuscated URLs with robust sanitisation.
     """
     if not encoded:
         return None
-    
+
     log("Wecima: decoding: {}".format(repr(encoded[:80])))
-    
+
     try:
-        # Step 1: Clean the string - some WeCima versions use spaces for '+'
+        # 1. Clean and sanitise – keep only Base64-valid chars
         cleaned = encoded.strip().replace(' ', '+')
-        
-        # Step 2: Fix padding
+        # Remove any character that is not valid Base64
+        cleaned = re.sub(r'[^A-Za-z0-9+/=]', '', cleaned)
+
+        # 2. Fix padding
         missing_padding = len(cleaned) % 4
         if missing_padding:
             cleaned += '=' * (4 - missing_padding)
-        
-        # Step 3: Decode
+
+        # 3. Decode
         decoded_bytes = base64.b64decode(cleaned)
-        
-        # Try UTF-8 first, fallback to latin-1
-        try:
-            decoded_url = decoded_bytes.decode('utf-8')
-        except UnicodeDecodeError:
-            decoded_url = decoded_bytes.decode('latin-1')
-        
-        # Step 4: Apply the 'Akwam Fix' - proper URL quoting for Arabic characters
-        # This preserves the URL structure while encoding non-ASCII characters
+
+        # 4. Try to decode as ASCII first (the URL should be ASCII)
+        # If it fails, fallback to UTF‑8, then to latin‑1, but ignore errors
+        for encoding in ('ascii', 'utf-8', 'latin-1'):
+            try:
+                decoded_url = decoded_bytes.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            # If all fail, use 'replace' to avoid crashing
+            decoded_url = decoded_bytes.decode('ascii', errors='replace')
+
+        # 5. Clean up common escape sequences
+        decoded_url = decoded_url.replace('\\u0026', '&').replace('\\/', '/')
+
+        # 6. Apply URL quoting for any remaining non‑ASCII (should be rare now)
         decoded_url = quote(decoded_url, safe=':/?&=#+')
-        
-        # Clean up any remaining non-printable characters
-        decoded_url = re.sub(r'[^\x20-\x7E]', '', decoded_url)
-        
-        # Fix protocol if needed
+
+        # 7. Fix protocol if missing
         if decoded_url.startswith('//'):
             decoded_url = 'https:' + decoded_url
         elif decoded_url.startswith('https') and not decoded_url.startswith('https://'):
             decoded_url = 'https://' + decoded_url[5:]
         elif decoded_url.startswith('http') and not decoded_url.startswith('http://'):
             decoded_url = 'http://' + decoded_url[4:]
-        
-        # Validate the URL looks reasonable
+
+        # Validate it looks like a real URL
         if decoded_url and ('http://' in decoded_url or 'https://' in decoded_url):
             log("Wecima: decode success: {}".format(decoded_url[:80]))
             return decoded_url
         else:
             log("Wecima: decoded but doesn't look like URL: {}".format(repr(decoded_url[:80])))
-            
+
     except Exception as e:
         log("Wecima: decode failed: {}".format(str(e)[:50]))
-    
-    # Fallback: Try to extract URL pattern directly
+
+    # Fallback: try to extract a plain URL pattern directly
     url_pattern = r'[a-zA-Z0-9\-]+\.(?:com|net|org|tv|cx|bid|site|click|show|video|rent|date|live|rip|top|xyz)(?:/[a-zA-Z0-9\-_/]+)?'
     match = re.search(url_pattern, encoded)
     if match:
         url = "https://" + match.group(0)
         log("Wecima: extracted URL pattern: {}".format(url))
         return url
-    
+
     return None
 
 
 def _extract_servers(html):
     """
-    Robust server extraction for the new WeCima 'List--Servers' layout.
+    Robust server extraction for the new WeCima 'WatchServersList' layout.
     Fixes the 'No servers detected' issue.
     """
     servers = []
@@ -408,7 +409,8 @@ def _extract_servers(html):
 
     # 1. Targeted Extraction: Isolate the server list container first
     # WeCima now wraps all real stream links inside this specific class
-    server_block_match = re.search(r'class="List--Servers">(.*?)</ul>', html, re.S)
+    # FIX: changed from "List--Servers" to "WatchServersList" as per current HTML
+    server_block_match = re.search(r'class="WatchServersList">(.*?)</ul>', html, re.S)
     
     if server_block_match:
         content = server_block_match.group(1)
@@ -713,47 +715,38 @@ def get_page(url, m_type=None):
 
 def extract_stream(url):
     """
-    Extract stream URL with proper referer header to avoid 403 errors.
-    Includes fallback in case base_extract_stream doesn't accept referer parameter.
+    Extract the final playable URL from a Wecima server embed link.
+    Returns (stream_url, quality_label, referer).
     """
     from .base import extract_stream as base_extract_stream
     
-    # Add referer for Wecima to avoid 403 errors on streaming URLs
-    referer = _get_base()
+    log("Wecima: extract_stream for {}".format(url))
     
-    # Try with referer first (preferred method)
+    # First, try the base extractor (which handles all the host resolvers)
     try:
-        result = base_extract_stream(url, referer=referer)
-        # Check if result is valid (has URL as first element)
-        if result and result[0]:
-            log("Wecima: extract_stream success with referer")
-            return result
-    except TypeError as e:
-        # base_extract_stream doesn't accept referer parameter
-        log("Wecima: base_extract_stream doesn't accept referer, using fallback")
+        stream_url, quality, ref = base_extract_stream(url)
+        if stream_url:
+            # Override the referer to Wecima's base URL
+            # because the stream host (savefiles, etc.) needs the embed page's referer.
+            wecima_referer = _get_base()
+            log("Wecima: base_extract_stream returned: {} (quality: {})".format(stream_url[:80], quality))
+            return stream_url, quality, wecima_referer
     except Exception as e:
-        # Other error occurred
-        log("Wecima: extract_stream with referer error: {}".format(str(e)[:50]))
+        log("Wecima: base_extract_stream error: {}".format(str(e)[:50]))
     
-    # Fallback to no referer parameter
+    # Fallback 1: try to resolve the embed page ourselves using fetch and simple patterns
+    log("Wecima: trying manual extraction fallback")
     try:
-        result = base_extract_stream(url)
-        if result and result[0]:
-            log("Wecima: extract_stream success without referer")
-            return result
+        html, final_url = fetch(url, referer=_get_base())
+        if html:
+            from .base import find_m3u8, find_mp4, _best_media_url
+            stream = find_m3u8(html) or find_mp4(html) or _best_media_url(html)
+            if stream:
+                log("Wecima: manual fallback found: {}".format(stream[:80]))
+                return stream, "HD", _get_base()
     except Exception as e:
-        log("Wecima: extract_stream fallback failed: {}".format(str(e)[:50]))
+        log("Wecima: manual fallback error: {}".format(str(e)[:50]))
     
-    # Second fallback: Try using the base fetch with referer to get the stream URL
-    try:
-        log("Wecima: attempting direct fetch with referer: {}".format(url))
-        html, final_url = fetch(url, referer=referer)
-        if html and final_url:
-            # If we got a redirect or final URL, return it
-            log("Wecima: direct fetch got: {}".format(final_url[:80]))
-            return final_url, "HD", url
-    except Exception as e:
-        log("Wecima: direct fetch failed: {}".format(str(e)[:50]))
-    
-    log("Wecima: all extract_stream methods failed")
-    return None, None, None
+    # Fallback 2: just return the URL itself (maybe the player can handle it as an embed)
+    log("Wecima: returning original URL as last resort: {}".format(url))
+    return url, "Unknown", _get_base()

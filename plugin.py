@@ -1462,10 +1462,10 @@ class ArabicPlayerHome(Screen):
         try:
             if url.startswith("//"): url = "https:" + url
             try:
-                from urllib.parse import urlparse, quote, urlunparse
+                from urllib.parse import urlparse, quote, unquote, urlunparse
                 p = list(urlparse(url))
-                p[2] = quote(p[2])
-                p[4] = quote(p[4])
+                p[2] = quote(unquote(p[2]))
+                p[4] = quote(unquote(p[4]))
                 url = urlunparse(p)
             except Exception: pass
 
@@ -1477,7 +1477,14 @@ class ArabicPlayerHome(Screen):
                 return
 
             cache_path = _poster_cache_path(url)
-            req = urllib2.Request(url, headers={"User-Agent": SAFE_UA})
+            # FIX: sites like arabseeds.cam and topcinemaa.top hotlink-protect
+            # their uploaded images and reject requests with no Referer at
+            # all. Derive a same-domain Referer generically from the image
+            # URL itself so this works across every site, not just one.
+            from urllib.parse import urlparse as _urlparse
+            _p = _urlparse(url)
+            referer = "{}://{}/".format(_p.scheme, _p.netloc)
+            req = urllib2.Request(url, headers={"User-Agent": SAFE_UA, "Referer": referer})
             data = urllib2.urlopen(req, timeout=7).read()
 
             with self._poster_lock:
@@ -2192,13 +2199,14 @@ class ArabicPlayerDetail(Screen):
         ]
         self["facts"].setText(_single_line_text("".join(facts), width=62))
         counts = []
-        has_episodes = bool(data.get("items"))
+        has_episodes = bool([e for e in data.get("items", []) if e.get("type") == "episode"])
+        has_servers = bool([s for s in data.get("servers", []) if s.get("url")])
         is_series_item = (
             data.get("type") in ("series", "show")
             or self._item.get("type") in ("series", "show")
             or has_episodes
         )
-        if is_series_item:
+        if has_episodes:
             counts.append("الحلقات: {}".format(len([e for e in data.get("items", []) if e.get("type") == "episode"])))
         else:
             counts.append("السيرفرات: {}".format(len([s for s in data.get("servers", []) if s.get("url")])))
@@ -2206,7 +2214,11 @@ class ArabicPlayerDetail(Screen):
             counts.append("السنة: {}".format(data.get("year")))
         self["source"].setText(_wrap_ui_text("المصدر: {}  |  {}".format(_site_label(self._site), "  |  ".join(counts)), width=58, max_lines=2))
         self["tmdb_note"].setText("TMDb: تم تعزيز البيانات والبوستر" if data.get("_tmdb") else "TMDb: لا توجد بيانات إضافية حالياً")
-        if is_series_item:
+        if has_episodes:
+            plot_label = "قصة المسلسل"
+        elif has_servers:
+            plot_label = "قصة الفيلم"
+        elif is_series_item:
             plot_label = "قصة المسلسل"
         else:
             plot_label = "قصة الفيلم"
@@ -2251,24 +2263,30 @@ class ArabicPlayerDetail(Screen):
             or bool(self._episodes)
         )
 
-        if is_series:
-            if self._episodes:
-                self["section"].setText(_single_line_text("الحلقات المتاحة: {}  |  اختر الحلقة المطلوبة".format(len(self._episodes)), width=90))
-                self["menu"].setList(["{}. {}".format(i + 1, _single_line_text(ep.get("title", "Episode"), width=58, fallback="حلقة")) for i, ep in enumerate(self._episodes)])
-                self["status"].setText(self._status_hint("اختار حلقة — OK"))
-            else:
-                self["section"].setText("الحلقات المتاحة: 0")
-                self["menu"].setList(["لا توجد حلقات متاحة حالياً"])
-                self["status"].setText("لا توجد حلقات")
+        # IMPORTANT: what to display is decided by what's actually present
+        # (self._episodes vs self._servers), not by the "type" label. An
+        # individual episode page is type="series" but has no
+        # sub-episodes of its own - it has servers, exactly like a movie.
+        # Gating on is_series meant every individual episode page always
+        # fell into the "no episodes available" branch and never even
+        # looked at self._servers, even when servers were correctly
+        # found (confirmed via logs showing servers=8 discarded here).
+        if self._episodes:
+            self["section"].setText(_single_line_text("الحلقات المتاحة: {}  |  اختر الحلقة المطلوبة".format(len(self._episodes)), width=90))
+            self["menu"].setList(["{}. {}".format(i + 1, _single_line_text(ep.get("title", "Episode"), width=58, fallback="حلقة")) for i, ep in enumerate(self._episodes)])
+            self["status"].setText(self._status_hint("اختار حلقة — OK"))
+        elif self._servers:
+            self["section"].setText(_single_line_text("السيرفرات المتاحة: {}  |  اختر الجودة أو السيرفر".format(len(self._servers)), width=90))
+            self["menu"].setList(["{}. {}".format(i + 1, _single_line_text(s.get("name", "Server"), width=58, fallback="Server")) for i, s in enumerate(self._servers)])
+            self["status"].setText(self._status_hint("اختار سيرفر — OK"))
+        elif is_series:
+            self["section"].setText("الحلقات المتاحة: 0")
+            self["menu"].setList(["لا توجد حلقات متاحة حالياً"])
+            self["status"].setText("لا توجد حلقات")
         else:
-            if self._servers:
-                self["section"].setText(_single_line_text("السيرفرات المتاحة: {}  |  اختر الجودة أو السيرفر".format(len(self._servers)), width=90))
-                self["menu"].setList(["{}. {}".format(i + 1, _single_line_text(s.get("name", "Server"), width=58, fallback="Server")) for i, s in enumerate(self._servers)])
-                self["status"].setText(self._status_hint("اختار سيرفر — OK"))
-            else:
-                self["section"].setText("السيرفرات المتاحة: 0")
-                self["menu"].setList(["لا توجد سيرفرات متاحة"])
-                self["status"].setText("لا توجد سيرفرات")
+            self["section"].setText("السيرفرات المتاحة: 0")
+            self["menu"].setList(["لا توجد سيرفرات متاحة"])
+            self["status"].setText("لا توجد سيرفرات")
 
         poster_url = data.get("poster") or self._item.get("poster", "")
         if poster_url:
@@ -2305,10 +2323,10 @@ class ArabicPlayerDetail(Screen):
 
             import urllib.request as urllib2
             try:
-                from urllib.parse import urlparse, quote, urlunparse
+                from urllib.parse import urlparse, quote, unquote, urlunparse
                 p = list(urlparse(url))
-                p[2] = quote(p[2])
-                p[4] = quote(p[4])
+                p[2] = quote(unquote(p[2]))
+                p[4] = quote(unquote(p[4]))
                 url = urlunparse(p)
             except Exception: pass
 
@@ -2319,7 +2337,12 @@ class ArabicPlayerDetail(Screen):
                 return
 
             cache_path = _poster_cache_path(url)
-            req = urllib2.Request(url, headers={"User-Agent": SAFE_UA})
+            # FIX: same missing-Referer hotlink-protection issue as the
+            # preview downloader above.
+            from urllib.parse import urlparse as _urlparse
+            _p = _urlparse(url)
+            referer = "{}://{}/".format(_p.scheme, _p.netloc)
+            req = urllib2.Request(url, headers={"User-Agent": SAFE_UA, "Referer": referer})
             data = urllib2.urlopen(req, timeout=10).read()
 
             save_path = cache_path or "/tmp/ap_detail_{}.jpg".format(int(time.time()))
@@ -2337,20 +2360,16 @@ class ArabicPlayerDetail(Screen):
         if idx < 0:
             return
 
-        is_series = bool(
-            self._data and (
-                self._data.get("type") in ("series", "show")
-                or self._item.get("type") in ("series", "show")
-                or self._episodes
-            )
-        )
-
-        if is_series:
+        # Mirrors _onLoaded's display logic exactly: what a click means is
+        # decided by what's actually present, not by the "type" label - an
+        # individual episode page is type="series" but has servers, not
+        # sub-episodes, and needs to behave like a movie here too.
+        if self._episodes:
             if idx >= len(self._episodes):
                 return
             ep = self._episodes[idx]
             self.session.open(ArabicPlayerDetail, ep, self._site, "episode")
-        else:
+        elif self._servers:
             if idx >= len(self._servers):
                 return
             server = self._servers[idx]

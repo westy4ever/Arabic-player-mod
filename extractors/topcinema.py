@@ -12,19 +12,52 @@ else:
     from HTMLParser import HTMLParser
     html_unescape = HTMLParser().unescape
 
-DOMAINS = ["https://topcinemaa.com"]
+DOMAINS = ["https://topcinemaa.top"]
 MAIN_URL = DOMAINS[0]
 
 def _normalize_url(url):
-    if not url: return ""
+    if not url:
+        return ""
     url = html_unescape(url.strip())
-    if url.startswith("//"): return "https:" + url
-    if not url.startswith("http"): return urljoin(MAIN_URL, url)
+    if url.startswith("//"):
+        return "https:" + url
+    if not url.startswith("http"):
+        return urljoin(MAIN_URL, url)
     return url
 
+_LEADING_TYPE_WORDS = ("فيلم", "افلام", "مسلسل", "مسلسلات", "انمي", "برنامج", "عرض")
+_TITLE_NOISE_PHRASES = (
+    "مشاهدة وتحميل", "مشاهدة وتحميل مباشر", "مشاهدة", "تحميل",
+    "مترجمة", "مترجم", "مدبلجة", "مدبلج",
+    "اون لاين", "اونلاين", "بجودة عالية", "بجودة", "حصريا", "كامل",
+)
+
 def _clean_title(title):
-    title = html_unescape(title)
-    return title.replace("&amp;", "&").strip()
+    """Strip bracketed tags, leading content-type words (فيلم/مسلسل/انمي/...),
+    and common quality/language noise phrases (مترجم, مدبلج, اون لاين, ...)
+    for a clean display title, e.g.
+    "[فيلم] فيلم Passenger 2026 مترجم اون لاين" -> "Passenger 2026".
+
+    Deliberately leaves season/episode markers (الموسم, الحلقة) untouched -
+    those carry real information for series titles.
+    """
+    title = html_unescape(title or "")
+    title = title.replace("&amp;", "&")
+    # Strip bracketed tags like "[فيلم]"
+    title = re.sub(r'\[[^\]]*\]\s*', '', title)
+    # Strip trailing site-branding suffix from <title> tag text, e.g.
+    # "... مترجمة - توب سينما" -> "... مترجمة"
+    title = re.sub(r'\s*[-|]\s*ت[ةه]?وب\s*سينما\s*$', '', title, flags=re.I)
+    # Strip known noise phrases first, so a leading type word that was
+    # originally preceded by one (e.g. "مشاهدة وتحميل فيلم ...") becomes
+    # the new leading word and gets caught below.
+    for phrase in _TITLE_NOISE_PHRASES:
+        title = re.sub(r'\s*' + re.escape(phrase) + r'\s*', ' ', title, flags=re.I)
+    # Strip a leading content-type word (there may be more than one)
+    words = title.split()
+    while words and words[0] in _LEADING_TYPE_WORDS:
+        words.pop(0)
+    return " ".join(words).strip()
 
 def get_categories():
     return [
@@ -39,46 +72,52 @@ def get_categories():
     ]
 
 def _extract_blocks(html):
+    """
+    Extract movie/series items from listing pages (categories, search, recent, etc.)
+    Looks for any <a> with href+title that contains an image with src/data-src.
+    Filters out navigation links (/category/, /search/, /page/, /tag/, /author/).
+    """
     items = []
-    # Match any <a> that has a class with 'block' and contains an <img> with src/data-src
-    # Using a more permissive regex that doesn't strictly depend on attribute order
-    blocks = re.findall(r'(<a[^>]+href=["\'][^"\']+["\'][^>]*title=["\'][^"\']+["\'][^>]*class=["\'][^"\']*block[^"\']*["\'][^>]*>.*?<img[^>]+(?:data-src|src)=["\']([^"\']+)["\'][^>]*>)', html, re.DOTALL | re.IGNORECASE)
-    
-    if not blocks:
-        # Final fallback for older pattern
-        blocks = re.findall(r'(<a[^>]+href=["\'][^"\']+["\'][^>]*title=["\'][^"\']+["\'][^>]*>.*?<img[^>]+(?:data-src|src)=["\']([^"\']+)["\'][^>]*>)', html, re.DOTALL | re.IGNORECASE)
+    pattern = r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*title=["\']([^"\']+)["\'][^>]*>(.*?)</a>'
+    for m in re.finditer(pattern, html, re.I | re.S):
+        href = m.group(1)
+        title = m.group(2)
+        inner = m.group(3)
 
-    for block_html, img in blocks:
-        link_m = re.search(r'href=["\']([^"\']+)["\']', block_html)
-        title_m = re.search(r'title=["\']([^"\']+)["\']', block_html)
-        
-        if link_m and title_m:
-            link = _normalize_url(link_m.group(1))
-            title = _clean_title(title_m.group(1))
-            if not img or img.strip() in ("", "http:", "https:"):
-                for _ipat in [
-                    r'data-lazy=["\']([^"\']+\.(?:jpe?g|png|webp)[^"\']*)["\']',
-                    r'data-original=["\']([^"\']+\.(?:jpe?g|png|webp)[^"\']*)["\']',
-                    r'data-bg=["\']([^"\']+\.(?:jpe?g|png|webp)[^"\']*)["\']',
-                    r'background(?:-image)?:\s*url\(["\']?([^"\')\s]+)',
-                ]:
-                    _im = re.search(_ipat, block_html, re.I)
-                    if _im:
-                        img = _im.group(1).strip("'\" ")
-                        break
-            img = _normalize_url(img)
+        # Skip if the link points to a non‑item page (category, search, pagination, etc.)
+        if re.search(r'/(?:category|search|page|tag|author)/', href, re.I):
+            continue
 
-            item_type = "movie"
-            if "مسلسل" in title or "حلقة" in title or "انمي" in title:
-                item_type = "series"
+        # Find image inside the <a>
+        img_match = re.search(r'<img[^>]+(?:data-src|src)=["\']([^"\']+)["\']', inner, re.I)
+        if not img_match:
+            continue
+        poster = img_match.group(1)
 
-            items.append({
-                "title": title,
-                "url": link,
-                "poster": img,
-                "type": item_type,
-                "_action": "details"
-            })
+        # Skip placeholder images
+        if not poster or poster.startswith('data:') or 'placeholder' in poster.lower():
+            continue
+
+        link = _normalize_url(href)
+        poster = _normalize_url(poster)
+
+        # FIX: type detection must run on the RAW title - _clean_title now
+        # strips "مسلسل"/"انمي" as leading content-type words, so checking
+        # the cleaned title here would always miss them and everything
+        # would default to "movie".
+        item_type = "movie"
+        if "مسلسل" in title or "حلقة" in title or "انمي" in title:
+            item_type = "series"
+
+        title = _clean_title(title)
+
+        items.append({
+            "title": title,
+            "url": link,
+            "poster": poster,
+            "type": item_type,
+            "_action": "details"
+        })
     return items
 
 def get_category_items(url):
@@ -86,32 +125,33 @@ def get_category_items(url):
     if not html:
         log("TopCinema: fetch returned no content for {}".format(url))
         return []
+
     items = _extract_blocks(html)
 
-    # Next page pagination
-    next_page_match = re.search(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*class=["\']next page-numbers["\']', html)
-    if next_page_match:
-        items.append({
-            "title": "➡️ الصفحة التالية",
-            "url": _normalize_url(next_page_match.group(1)),
-            "type": "category",
-            "_action": "category"
-        })
-        
+    # Pagination: find the » link (next page)
+    next_match = re.search(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>»\s*</a>', html, re.I)
+    if next_match:
+        next_url = _normalize_url(next_match.group(1))
+        if next_url:
+            items.append({
+                "title": "➡️ الصفحة التالية",
+                "url": next_url,
+                "type": "category",
+                "_action": "category"
+            })
     return items
 
 def search(query, page=1):
-    items = []
     url = MAIN_URL + "/search/?query=" + quote_plus(query) + "&type=all"
     html, final_url = fetch(url, referer=MAIN_URL)
-    items = _extract_blocks(html)
-    return items
+    return _extract_blocks(html)
 
 def get_page(url):
     html, final_url = fetch(url, referer=MAIN_URL)
 
     title_m = re.search(r'<title>(.*?)</title>', html, re.I | re.S)
-    title = _clean_title(title_m.group(1)) if title_m else "Unknown Title"
+    raw_title = title_m.group(1) if title_m else "Unknown Title"
+    title = _clean_title(raw_title)
 
     poster_m = re.search(r'property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
     poster = _normalize_url(poster_m.group(1)) if poster_m else ""
@@ -123,21 +163,19 @@ def get_page(url):
     episodes = []
     item_type = "movie"
 
-    watch_page_html = html or ""
-    movie_url = final_url
-    watch_url = ""
-
+    # Try to locate the watch page URL
     watch_url_m = re.search(
         r'<a[^>]+class=["\'][^"\']*watch[^"\']*["\'][^>]+href=["\']([^"\']+/watch/?)[\"\']',
-        html,
-        re.I
+        html, re.I
     )
+    watch_page_html = html
+    watch_url = final_url
     if watch_url_m:
         watch_url = _normalize_url(watch_url_m.group(1))
         watch_page_html, _ = fetch(watch_url, referer=final_url)
         watch_page_html = watch_page_html or ""
-        final_url = watch_url
 
+    # Extract post ID (used for server AJAX)
     post_id = ""
     for pat in [
         r'data-id=["\'](\d+)["\']',
@@ -150,125 +188,111 @@ def get_page(url):
             post_id = m.group(1)
             break
 
-    def _server_name_ok(name):
-        if not name:
-            return False
-        n = _clean_title(name).strip()
-        if not n:
-            return False
-        bad_exact = [u"صالة العرض", u"صالة", u"Gallery", u"السيرفرات", u"مشاهدة", u"watch"]
-        if n in bad_exact:
-            return False
-        # reject section titles / headings
-        low = n.lower()
-        for bad in ["gallery", "watch servers", "servers"]:
-            if low == bad:
-                return False
-        return True
-
+    # Server extraction – look for <li> with data-id and data-server
+    # FIX: real markup is `<li data-id="X" data-server="N" class="server--item ...">`
+    # - data-id/data-server come BEFORE class, but this regex required class
+    # first, so it never matched any real page and silently fell through to
+    # the generic fallback below every single time. Made attribute order
+    # independent using lookaheads so it matches regardless of which
+    # attribute comes first.
     server_candidates = []
-
-    # 1) الشكل الصحيح: لازم نمسك الـ li كامل لأن data-id/data-server بيبقوا على العنصر نفسه
-    old_matches = re.findall(
-        r'<li[^>]*class=["\'][^"\']*server--item[^"\']*["\'][^>]*data-id=["\'](\d+)["\'][^>]*data-server=["\'](\d+)["\'][^>]*>(.*?)</li>',
-        watch_page_html,
-        re.I | re.S
+    li_matches = re.findall(
+        r'<li(?=[^>]*class=["\'][^"\']*server--item)(?=[^>]*data-id=["\'](\d+))(?=[^>]*data-server=["\'](\d+))[^>]*>(.*?)</li>',
+        watch_page_html, re.I | re.S
     )
-    for pid, idx, inner in old_matches:
+    for pid, idx, inner in li_matches:
         name = re.sub(r'<[^>]+>', ' ', inner)
         name = _clean_title(re.sub(r'\s+', ' ', name)).strip()
-        if _server_name_ok(name):
+        if name:
             server_candidates.append((pid, idx, name))
 
-    # 2) fallback: data-server موجود على أي عنصر
+    # Fallback: any element with data-id and data-server
     if not server_candidates:
         generic_matches = re.findall(
             r'<(?:li|a|button|div)[^>]*data-id=["\'](\d+)["\'][^>]*data-server=["\'](\d+)["\'][^>]*>(.*?)</(?:li|a|button|div)>',
-            watch_page_html,
-            re.I | re.S
+            watch_page_html, re.I | re.S
         )
         for pid, idx, inner in generic_matches:
             name = re.sub(r'<[^>]+>', ' ', inner)
             name = _clean_title(re.sub(r'\s+', ' ', name)).strip()
-            if _server_name_ok(name):
+            if name:
                 server_candidates.append((pid, idx, name))
 
-    # 3) fallback بالأسماء المعروفة فقط
+    # Last resort: use predefined server names if we have a post_id
     if not server_candidates and post_id:
-        visible_servers = [
-            "متعدد الجودات",
-            "UpDown",
-            "StreamWish",
-            "Doodstream",
-            "Filelions",
-            "Streamtape",
-            "LuluStream",
-            "Filemoon",
-            "Mixdrop",
-            "VidGuard",
-            "Okru"
+        known_servers = [
+            "متعدد الجودات", "UpDown", "StreamWish", "Doodstream",
+            "Filelions", "Streamtape", "LuluStream", "Filemoon",
+            "Mixdrop", "VidGuard", "Okru"
         ]
-        found_names = []
-        for srv in visible_servers:
+        for i, srv in enumerate(known_servers, 1):
             if re.search(re.escape(srv), watch_page_html, re.I):
-                found_names.append(srv)
-        for i, srv_name in enumerate(found_names, 1):
-            server_candidates.append((post_id, str(i), srv_name))
+                server_candidates.append((post_id, str(i), srv))
 
-    log("TopCinema FIX: post_id={} servers_found={}".format(post_id, repr(server_candidates[:10])))
-
-    seen = set()
     ajax_endpoint = MAIN_URL + "/wp-content/themes/movies2023/Ajaxat/Single/Server.php"
-
+    seen = set()
     for pid, idx, name in server_candidates:
         if not pid or not idx:
-            continue
-        clean_name = _clean_title(name or "").strip()
-        if not _server_name_ok(clean_name):
             continue
         key = (pid, idx)
         if key in seen:
             continue
         seen.add(key)
-
+        clean_name = _clean_title(name or "").strip()
+        if not clean_name:
+            continue
         s_url = "topcinema_server|{}|{}|{}|{}".format(
-            ajax_endpoint, pid, idx, watch_url or movie_url
+            ajax_endpoint, pid, idx, watch_url
         )
         servers.append({
             "name": "توب سينما " + clean_name,
             "url": s_url,
         })
 
-    # حلقات: شغّلها فقط لو واضح إنه مسلسل، عشان الفيلم ما يتحسبش item واحد بالغلط
+    # Episodes extraction – only if the page looks like a series
+    # FIX: must check raw_title, not the cleaned title - _clean_title now
+    # strips "مسلسل" as a leading content-type word, so this would always
+    # miss it on the cleaned version.
     is_series_like = (
-        ("مسلسل" in title) or
-        ("الحلقة" in watch_page_html) or
-        ("episodes" in watch_page_html.lower()) or
-        ("season" in watch_page_html.lower())
+        "مسلسل" in raw_title or
+        "الحلقة" in watch_page_html or
+        "episodes" in watch_page_html.lower() or
+        "season" in watch_page_html.lower()
     )
-
     if is_series_like:
-        episodes_patterns = [
-            r'<div[^>]+class=[\"\'][^\"]*(?:episodes|series-episodes|season-episodes|ep_list|episodes-list|series-list|all-episodes)[^\"]*[\"\'][^>]*>(.*?)</div>',
-            r'<ul[^>]*class=[\"\'][^\"]*(?:episodes|series-episodes|list-episodes|ep_list)[^\"]*[\"\'][^>]*>(.*?)</ul>',
-            r'<section[^>]*class=[\"\'][^\"]*(?:episodes|series)[^\"]*[\"\'][^>]*>(.*?)</section>',
-            r'<div[^>]+id=[\"\'][^\"]*(?:episodes|episodes-list|episodes-all)[^\"]*[\"\'][^>]*>(.*?)</div>'
-        ]
-
-        eps_html = ""
-        for pat in episodes_patterns:
-            matches = re.findall(pat, watch_page_html, re.S | re.I)
-            if matches:
-                eps_html = "".join(matches)
-                break
-
-        if not eps_html:
-            eps_html = watch_page_html
+        eps_container = ""
+        # FIX: the confirmed real container is `<div class="episodes--list--side">`
+        # containing a flat list of <a> episode links with no nested divs -
+        # try this first with a precise, non-greedy match. The old fallback
+        # patterns below still exist for other layouts, but their generic
+        # "episodes" alternative was matching the WRONG, OUTER wrapper div
+        # (`episodes--side--list`, which nests the season-toggler dropdown
+        # before the actual episode links) and the non-greedy `(.*?)</div>`
+        # was truncating at that nested div's closing tag - only ever
+        # capturing the season selector, never a single actual episode link.
+        m = re.search(
+            r'<div[^>]+class=["\'][^"\']*episodes--list--side[^"\']*["\'][^>]*>(.*?)</div>',
+            watch_page_html, re.S | re.I
+        )
+        if m:
+            eps_container = m.group(1)
+        else:
+            for container_pat in [
+                r'<div[^>]+class=["\'][^"\']*(?:episodes|series-episodes|season-episodes|ep_list|episodes-list|series-list|all-episodes)[^"\']*["\'][^>]*>(.*?)</div>',
+                r'<ul[^>]*class=["\'][^"\']*(?:episodes|series-episodes|list-episodes|ep_list)[^"\']*["\'][^>]*>(.*?)</ul>',
+                r'<section[^>]*class=["\'][^"\']*(?:episodes|series)[^"\']*["\'][^>]*>(.*?)</section>',
+                r'<div[^>]+id=["\'][^"\']*(?:episodes|episodes-list|episodes-all)[^"\']*["\'][^>]*>(.*?)</div>'
+            ]:
+                m = re.search(container_pat, watch_page_html, re.S | re.I)
+                if m:
+                    eps_container = m.group(1)
+                    break
+        if not eps_container:
+            eps_container = watch_page_html
 
         eps_matches = re.findall(
             r'<a[^>]+href=["\']([^"\']+/(?:watch|episode)[^"\']*)["\'][^>]*>(.*?)</a>',
-            eps_html,
-            re.DOTALL | re.I
+            eps_container, re.DOTALL | re.I
         )
         seen_eps = set()
         for e_link, e_inner in eps_matches:
@@ -313,15 +337,15 @@ def extract_stream(url):
         post_id = parts[2]
         server_index = parts[3]
         referer_url = parts[4] if len(parts) > 4 else MAIN_URL
-        
+
         postdata = {
             "id": post_id,
             "i": server_index
         }
-        
-        html, _ = fetch(ajax_url, referer=referer_url, extra_headers={"X-Requested-With": "XMLHttpRequest"}, post_data=postdata)
-        
-        v_url = ""
+        html, _ = fetch(ajax_url, referer=referer_url,
+                        extra_headers={"X-Requested-With": "XMLHttpRequest"},
+                        post_data=postdata)
+
         ifr_m = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html)
         if ifr_m:
             v_url = _normalize_url(ifr_m.group(1))
@@ -329,9 +353,8 @@ def extract_stream(url):
             resolved = resolve_iframe_chain(v_url, referer=MAIN_URL)
             if resolved:
                 if isinstance(resolved, tuple):
-                    return resolved[0], None, (resolved[1] if len(resolved)>1 and resolved[1] else MAIN_URL)
+                    return resolved[0], None, (resolved[1] if len(resolved) > 1 and resolved[1] else MAIN_URL)
                 return resolved, None, MAIN_URL
             return v_url, None, MAIN_URL
-            
-    return url, None, MAIN_URL
 
+    return url, None, MAIN_URL
