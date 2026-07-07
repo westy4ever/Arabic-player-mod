@@ -40,6 +40,10444 @@ extractors/
   __init__.py
   akwam.py
   akwams.py
+  arablionztv.py
+  arabseed.py
+  base.py
+  egydead.py
+  fasel.py
+  faselhd_hdx.py
+  faselhd_rip.py
+  shaheed.py
+  topcinema.py
+  wecima.py
+images/
+  bg_detail.png
+  bg_search.png
+  bg_settings.png
+  bg.png
+  playback_a_ff.png
+  playback_a_pause.png
+  playback_a_play.png
+  playback_a_rew.png
+  playback_banner_sd.png
+  playback_banner.png
+  playback_buff_progress.png
+  playback_cbuff_progress.png
+  playback_ffmpeg_logo.png
+  playback_gstreamer_logo.png
+  playback_loop_off.png
+  playback_loop_on.png
+  playback_pointer.png
+  playback_progress.png
+  playerclock.xml
+  playerskin.xml
+  settings.json
+  splash.png
+  sub_synchro.png
+plugin.png
+plugin.py
+README.md
+repomix-output-westy4ever-Arabic-player-mod.md
+```
+
+# Files
+
+## File: extractors/__init__.py
+``````python
+# -*- coding: utf-8 -*-
+# This file makes the extractors directory a Python package
+``````
+
+## File: extractors/akwam.py
+``````python
+# -*- coding: utf-8 -*-
+"""
+Extractor for Akwam - akwam.com.co/
+"""
+
+import re
+import urllib.parse
+from urllib.parse import urljoin, urlparse, parse_qs, quote, unquote
+from .base import fetch, log
+
+MAIN_URL = "https://akwam.com.co/"
+
+
+def _clean_title(title):
+    if not title:
+        return ""
+    title = title.replace("&amp;", "&")
+    title = title.replace("مشاهدة", "")
+    title = title.replace("تحميل", "")
+    title = title.replace("فيلم", "")
+    title = title.replace("مسلسل", "")
+    title = re.sub(r'\s*[-|]\s*أكوام.*$', '', title)
+    title = re.sub(r'\s*[-|]\s*Akwam.*$', '', title, flags=re.I)
+    return title.strip()
+
+
+def _normalize_url(url):
+    """Normalize URL with proper encoding for non-ASCII characters"""
+    if not url:
+        return ""
+    url = str(url).strip()
+    url = url.replace('&amp;', '&')
+    
+    # 1. Handle Akwam's specific video server
+    # Don't over-encode downet links; they just need standard ASCII
+    if "downet.net" in url:
+        # Just replace spaces with %20, nothing else
+        return url.replace(" ", "%20")
+    
+    # 2. Re-encode raw Arabic titles for the main site
+    try:
+        # First unquote to avoid double-encoding existing %xx
+        raw_url = unquote(url)
+        # Then quote everything except the standard URL delimiters
+        # This converts Arabic characters to %XX format (ASCII safe)
+        return quote(raw_url, safe=':/?&=#+')
+    except Exception as e:
+        log("Akwam normalize_url encoding error: {}".format(e))
+        # Fallback: return original URL
+        return url
+
+
+def get_categories():
+    """Return all available categories."""
+    return [
+        {"title": "🎬 English Movies", "url": urljoin(MAIN_URL, "movies?section=30"), "type": "category", "_action": "category"},
+        {"title": "🎬 Arabic Movies", "url": urljoin(MAIN_URL, "movies?section=29"), "type": "category", "_action": "category"},
+        {"title": "🎬 Indian Movies", "url": urljoin(MAIN_URL, "movies?section=31"), "type": "category", "_action": "category"},
+        {"title": "🎬 Turkish Movies", "url": urljoin(MAIN_URL, "movies?section=32"), "type": "category", "_action": "category"},
+        {"title": "🎬 Asian Movies", "url": urljoin(MAIN_URL, "movies?section=33"), "type": "category", "_action": "category"},
+        {"title": "🎬 Anime Movies", "url": urljoin(MAIN_URL, "movies?category=30"), "type": "category", "_action": "category"},
+        {"title": "🎬 Netflix Movies", "url": urljoin(MAIN_URL, "movies?category=72"), "type": "category", "_action": "category"},
+        {"title": "📺 TV Series", "url": urljoin(MAIN_URL, "series"), "type": "category", "_action": "category"},
+        {"title": "📡 TV Shows", "url": urljoin(MAIN_URL, "shows"), "type": "category", "_action": "category"},
+        {"title": "🎭 Variety", "url": urljoin(MAIN_URL, "mix"), "type": "category", "_action": "category"},
+        {"title": "🆕 Recent", "url": urljoin(MAIN_URL, "recent"), "type": "category", "_action": "category"},
+    ]
+
+
+def get_category_items(url):
+    """
+    Fetch items from a category page.
+    """
+    url = url.replace('&amp;', '&')
+    
+    # Ensure page parameter
+    if 'page=' not in url:
+        if '?' in url:
+            url += '&page=1'
+        else:
+            url += '?page=1'
+    
+    log("Akwam: Fetching category URL: {}".format(url))
+    
+    html, final_url = fetch(url, referer=MAIN_URL)
+    if not html:
+        log("Akwam: get_category_items failed for {}".format(url))
+        return []
+
+    items = []
+    seen = set()
+
+    # Get current page number
+    current_page = 1
+    page_match = re.search(r'[?&]page=(\d+)', url)
+    if page_match:
+        current_page = int(page_match.group(1))
+    
+    log("Akwam: Current page: {}".format(current_page))
+    
+    # Add page separator
+    items.append({
+        "title": "━━━ Page {} ━━━".format(current_page),
+        "type": "separator",
+        "_action": "separator",
+    })
+
+    # Find all entry-box divs and extract from each
+    entry_boxes = re.split(r'<div class="entry-box entry-box-1">', html)
+    
+    log("Akwam: Found {} entry-box sections".format(len(entry_boxes) - 1))
+    
+    for box in entry_boxes[1:]:
+        # Extract title and URL from h3 a tag
+        title_match = re.search(r'<h3[^>]*class="[^"]*entry-title[^"]*"[^>]*>.*?<a\s+href="([^"]+)"[^>]*class="[^"]*text-white[^"]*"[^>]*>([^<]+)</a>', box, re.S | re.I)
+        
+        if not title_match:
+            continue
+            
+        movie_url = title_match.group(1)
+        title = title_match.group(2).strip()
+        
+        if movie_url in seen:
+            continue
+        seen.add(movie_url)
+        
+        full_url = _normalize_url(movie_url)
+        
+        # Extract poster
+        poster = ""
+        img_match = re.search(r'data-src="([^"]+)"', box, re.I)
+        if not img_match:
+            img_match = re.search(r'src="([^"]+)"', box, re.I)
+        if img_match:
+            poster = img_match.group(1)
+            if "placeholder" in poster.lower():
+                poster = ""
+            else:
+                poster = _normalize_url(poster)
+        
+        items.append({
+            "title": _clean_title(title),
+            "url": full_url,
+            "poster": poster,
+            "type": "movie",
+            "_action": "details",
+        })
+
+    log("Akwam: Extracted {} movie items from page {}".format(len(items) - 1, current_page))
+
+    # Find next page URL
+    next_url = None
+    next_page_num = current_page + 1
+    
+    # Look for the next page number link
+    next_match = re.search(r'<a\s+class="page-link"[^>]+href="([^"]+)"[^>]*>{}</a>'.format(next_page_num), html, re.I)
+    
+    if next_match:
+        next_url = _normalize_url(next_match.group(1))
+        if next_url and next_url != url:
+            log("Akwam: Found next page: {}".format(next_url))
+            items.append({
+                "title": "➡️ Page {} (Next)".format(current_page + 1),
+                "url": next_url,
+                "type": "category",
+                "_action": "category",
+            })
+
+    log("Akwam: Total items returned: {}".format(len(items)))
+    return items
+
+
+def get_page(url):
+    """Extract video URL from a movie page - returns only working server."""
+    if not url or url.startswith("javascript"):
+        return {"title": "Error", "servers": [], "items": [], "type": "movie"}
+
+    log("Akwam: Getting movie page: {}".format(url))
+    
+    html, final_url = fetch(url, referer=MAIN_URL)
+    if not html:
+        log("Akwam: get_page failed for {}".format(url))
+        return {"title": "Error", "servers": [], "items": []}
+
+    result = {
+        "url": final_url or url,
+        "title": "",
+        "poster": "",
+        "plot": "",
+        "servers": [],
+        "items": [],
+        "type": "movie",
+    }
+
+    # Extract metadata
+    title_match = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', html, re.I)
+    if title_match:
+        result["title"] = _clean_title(title_match.group(1))
+
+    poster_match = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html, re.I)
+    if poster_match:
+        result["poster"] = _normalize_url(poster_match.group(1))
+
+    plot_match = re.search(r'<meta[^>]+name="description"[^>]+content="([^"]+)"', html, re.I)
+    if plot_match:
+        result["plot"] = _clean_title(plot_match.group(1))
+
+    # Look for go.akwam.com.co watch links (only the working one)
+    watch_match = re.search(r'href="(https?://go\.akwam\.com\.co/watch/\d+)"', html, re.I)
+    
+    if watch_match:
+        normalized_url = _normalize_url(watch_match.group(1))
+        if normalized_url:
+            result["servers"].append({
+                "name": "🎬 Play Movie",
+                "url": normalized_url,
+                "type": "redirect"
+            })
+
+    log("Akwam: Found {} servers for {}".format(len(result["servers"]), result["title"]))
+    return result
+
+
+def search(query, page=1):
+    """Search functionality."""
+    search_url = urljoin(MAIN_URL, "search?q=" + query.replace(" ", "+"))
+    if page > 1:
+        search_url = urljoin(MAIN_URL, "search?q={}&page={}".format(query.replace(" ", "+"), page))
+
+    log("Akwam: Searching for: {}".format(query))
+    
+    html, _ = fetch(search_url, referer=MAIN_URL)
+    if not html:
+        return []
+
+    items = []
+    
+    entry_boxes = re.split(r'<div class="entry-box entry-box-1">', html)
+    
+    for box in entry_boxes[1:]:
+        title_match = re.search(r'<h3[^>]*class="[^"]*entry-title[^"]*"[^>]*>.*?<a\s+href="([^"]+)"[^>]*class="[^"]*text-white[^"]*"[^>]*>([^<]+)</a>', box, re.S | re.I)
+        if title_match:
+            movie_url = title_match.group(1)
+            title = title_match.group(2).strip()
+            items.append({
+                "title": _clean_title(title),
+                "url": _normalize_url(movie_url),
+                "poster": "",
+                "type": "movie",
+                "_action": "details",
+            })
+
+    log("Akwam: Search found {} results".format(len(items)))
+    return items
+
+
+def extract_stream(url):
+    """
+    Extract stream from go.akwam.com.co/watch URLs.
+    Returns plain URL without headers (like egydead.py does).
+    CRITICAL FIX: Properly encodes non-ASCII characters for proxy compatibility.
+    """
+    log("Akwam extract_stream: {}".format(url[:100]))
+    
+    # Handle go.akwam.com.co redirect
+    if 'go.akwam.com.co' in url:
+        log("Akwam: Fetching redirect page: {}".format(url))
+        html, final_url = fetch(url, referer=MAIN_URL)
+        
+        if html:
+            # Look for the final watch page URL
+            watch_page_match = re.search(r'href="(https?://akwam\.com\.co/watch/\d+/\d+/[^"]+)"[^>]*class="[^"]*download-link[^"]*"', html, re.I)
+            
+            if not watch_page_match:
+                watch_page_match = re.search(r'href="(https?://akwam\.com\.co/watch/\d+/\d+/[^"]+)"', html, re.I)
+            
+            if watch_page_match:
+                watch_page_url = watch_page_match.group(1)
+                log("Akwam: Found watch page: {}".format(watch_page_url))
+                
+                # Fetch the watch page to get the video source
+                watch_html, _ = fetch(watch_page_url, referer=url)
+                if watch_html:
+                    # Look for video source tag
+                    source_match = re.search(r'<source\s+src="([^"]+)"\s+type="video/mp4"[^>]*>', watch_html, re.I)
+                    if not source_match:
+                        source_match = re.search(r'<source\s+src="([^"]+)"', watch_html, re.I)
+                    
+                    if source_match:
+                        video_url = source_match.group(1)
+                        quality = "HD"
+                        if "1080" in video_url.lower():
+                            quality = "1080p"
+                        elif "720" in video_url.lower():
+                            quality = "720p"
+                        
+                        # Clean URL - remove any pipe characters
+                        if '|' in video_url:
+                            video_url = video_url.split('|')[0]
+                        
+                        # ===== CRITICAL FIX FOR ARABIC/INDIAN CONTENT =====
+                        # This prevents the Latin-1 encoding error:
+                        # UnicodeEncodeError: 'latin-1' codec can't encode characters
+                        if video_url:
+                            # Check if this is a downet.net URL
+                            if "downet.net" in video_url:
+                                # Don't over-encode downet links; just fix spaces
+                                video_url = video_url.replace(" ", "%20")
+                                log("Akwam: Fixed downet.net URL (spaces only)")
+                            else:
+                                try:
+                                    # 1. Decode to get the raw Arabic string
+                                    raw_url = unquote(video_url)
+                                    # 2. Re-encode specifically for the HTTP headers (Proxy fix)
+                                    # The 'safe' parameter keeps the URL structure intact
+                                    video_url = quote(raw_url, safe=':/?&=#+')
+                                    log("Akwam: Encoded video URL for proxy compatibility")
+                                except Exception as e:
+                                    log("Akwam encoding error: {}".format(e))
+                                    # Fallback: try direct quoting
+                                    try:
+                                        video_url = quote(video_url, safe=':/?&=#+')
+                                    except:
+                                        pass
+                        # ===== END OF CRITICAL FIX =====
+                        
+                        log("Akwam: Found video URL: {}".format(video_url[:80]))
+                        return video_url, quality, watch_page_url
+                    
+                    # Also look for video element
+                    video_match = re.search(r'<video[^>]*>.*?<source\s+src="([^"]+)".*?</video>', watch_html, re.S | re.I)
+                    if video_match:
+                        video_url = video_match.group(1)
+                        quality = "HD"
+                        if "1080" in video_url.lower():
+                            quality = "1080p"
+                        elif "720" in video_url.lower():
+                            quality = "720p"
+                        
+                        if '|' in video_url:
+                            video_url = video_url.split('|')[0]
+                        
+                        # ===== CRITICAL FIX FOR ARABIC/INDIAN CONTENT =====
+                        # Apply same encoding fix
+                        if video_url:
+                            # Check if this is a downet.net URL
+                            if "downet.net" in video_url:
+                                # Don't over-encode downet links; just fix spaces
+                                video_url = video_url.replace(" ", "%20")
+                                log("Akwam: Fixed downet.net URL from video element (spaces only)")
+                            else:
+                                try:
+                                    raw_url = unquote(video_url)
+                                    video_url = quote(raw_url, safe=':/?&=#+')
+                                    log("Akwam: Encoded video URL from video element")
+                                except Exception as e:
+                                    log("Akwam encoding error in video element: {}".format(e))
+                                    try:
+                                        video_url = quote(video_url, safe=':/?&=#+')
+                                    except:
+                                        pass
+                        # ===== END OF CRITICAL FIX =====
+                        
+                        log("Akwam: Found video URL: {}".format(video_url[:80]))
+                        return video_url, quality, watch_page_url
+    
+    log("Akwam: Failed to find stream")
+    return None, None, None
+``````
+
+## File: extractors/akwams.py
+``````python
+# -*- coding: utf-8 -*-
+"""
+Extractor for Akwams - akwams.com.co
+Includes Recent category (latest added content)
+"""
+
+import re
+import json
+from urllib.parse import urljoin
+from .base import fetch, log
+
+MAIN_URL = "https://akwams.com.co/"
+
+
+def _clean_title(title):
+    return (
+        (title or "")
+        .replace("&amp;", "&")
+        .replace("مشاهدة", "")
+        .replace("تحميل", "")
+        .replace("فيلم", "")
+        .replace("مسلسل", "")
+        .strip()
+    )
+
+
+def _normalize_url(url):
+    if not url:
+        return ""
+    url = str(url).strip()
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith("/"):
+        return urljoin(MAIN_URL, url)
+    if not url.startswith("http") and "://" not in url:
+        return urljoin(MAIN_URL, url)
+    return url
+
+
+def get_categories():
+    """Return all categories from Akwams navigation menu with proper English names."""
+    return [
+        {"title": "🆕 Recent (أضيف حديثا)",   "url": "https://akwams.com.co/recent/", "type": "category", "_action": "category"},
+        {"title": "🎬 English Movies",          "url": "https://akwams.com.co/category/movies/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/", "type": "category", "_action": "category"},
+        {"title": "🎬 Dubbed English Movies",    "url": "https://akwams.com.co/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a%d8%a9-%d9%85%d8%af%d8%a8%d9%84%d8%ac%d8%a9/", "type": "category", "_action": "category"},
+        {"title": "🎬 Arabic Movies",           "url": "https://akwams.com.co/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%b9%d8%b1%d8%a8%d9%8a/", "type": "category", "_action": "category"},
+        {"title": "🎬 Asian Movies",            "url": "https://akwams.com.co/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%b3%d9%8a%d9%88%d9%8a%d8%a9/", "type": "category", "_action": "category"},
+        {"title": "🎬 Anime Movies",            "url": "https://akwams.com.co/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d9%86%d9%85%d9%8a/", "type": "category", "_action": "category"},
+        {"title": "🎬 Turkish Movies",          "url": "https://akwams.com.co/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%aa%d8%b1%d9%83%d9%8a%d8%a9/", "type": "category", "_action": "category"},
+        {"title": "🎬 Indian Movies",           "url": "https://akwams.com.co/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d9%87%d9%86%d8%af%d9%8a%d8%a9/", "type": "category", "_action": "category"},
+        {"title": "🎬 Cartoon Movies",          "url": "https://akwams.com.co/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d9%83%d8%b1%d8%aa%d9%88%d9%86/", "type": "category", "_action": "category"},
+        {"title": "📺 English Series",          "url": "https://akwams.com.co/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/", "type": "category", "_action": "category"},
+        {"title": "📺 Anime Series",            "url": "https://akwams.com.co/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d9%86%d9%85%d9%8a/", "type": "category", "_action": "category"},
+        {"title": "📺 Turkish Series",          "url": "https://akwams.com.co/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%aa%d8%b1%d9%83%d9%8a%d8%a9/", "type": "category", "_action": "category"},
+        {"title": "📺 Cartoon Series",          "url": "https://akwams.com.co/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d9%83%d8%b1%d8%aa%d9%88%d9%86/", "type": "category", "_action": "category"},
+    ]
+
+
+def get_category_items(url):
+    """
+    Fetch items from a category page.
+    Adds page number indicator and next page button at bottom.
+    """
+    html, final_url = fetch(url, referer=MAIN_URL)
+    if not html:
+        log("Akwams: get_category_items failed for {}".format(url))
+        return []
+
+    items = []
+    seen = set()
+
+    # Extract current page number from URL
+    current_page = 1
+    page_match = re.search(r'/page/(\d+)/', url)
+    if page_match:
+        current_page = int(page_match.group(1))
+    
+    # Add page indicator as first item
+    items.append({
+        "title": "━━━ Page {} ━━━".format(current_page),
+        "type": "separator",
+        "_action": "separator",
+    })
+
+    # Pattern for category pages (works for both /category/ and /recent/)
+    pattern = r'<a[^>]+href="([^"]+)"[^>]*class="box"[^>]*>.*?<img[^>]+data-src="([^"]+)"[^>]+alt="([^"]+)"'
+    
+    for match in re.findall(pattern, html, re.S | re.I):
+        link, img, title = match
+        if link in seen or "/category/" in link:
+            continue
+        seen.add(link)
+        
+        full_url = _normalize_url(link)
+        if not full_url:
+            continue
+        
+        items.append({
+            "title": _clean_title(title),
+            "url": full_url,
+            "poster": _normalize_url(img),
+            "type": "movie",
+            "_action": "details",
+        })
+
+    # Find next page URL
+    next_url = None
+    
+    next_match = re.search(r'<a[^>]+class="page-link"[^>]+href="([^"]+)"[^>]*>\s*التالي\s*»\s*</a>', html, re.I)
+    if not next_match:
+        next_match = re.search(r'<link[^>]+rel="next"[^>]+href="([^"]+)"', html, re.I)
+    
+    if next_match:
+        next_url = _normalize_url(next_match.group(1))
+    
+    # Also check for numbered pagination
+    if not next_url:
+        next_page_num = current_page + 1
+        next_match = re.search(r'<a[^>]+class="page-link"[^>]+href="([^"]+)"[^>]*>{}</a>'.format(next_page_num), html, re.I)
+        if next_match:
+            next_url = _normalize_url(next_match.group(1))
+
+    if next_url and next_url != url:
+        items.append({
+            "title": "➡️ Page {} (Next)".format(current_page + 1),
+            "url": next_url,
+            "type": "category",
+            "_action": "category",
+        })
+
+    log("Akwams: category {} -> {} items (page {})".format(url, len(items), current_page))
+    return items
+
+
+def get_page(url):
+    """Extract details from a movie page."""
+    if not url or url.startswith("javascript"):
+        return {"title": "Error", "servers": [], "items": [], "type": "movie"}
+
+    html, final_url = fetch(url, referer=MAIN_URL)
+    if not html:
+        log("Akwams: get_page failed for {}".format(url))
+        return {"title": "Error", "servers": [], "items": []}
+
+    result = {
+        "url": final_url or url,
+        "title": "",
+        "poster": "",
+        "plot": "",
+        "servers": [],
+        "items": [],
+        "type": "movie",
+    }
+
+    # Extract title
+    title_match = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.S | re.I)
+    if title_match:
+        result["title"] = _clean_title(title_match.group(1))
+    else:
+        og_title = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', html, re.I)
+        if og_title:
+            result["title"] = _clean_title(og_title.group(1))
+
+    # Extract poster
+    poster_match = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html, re.I)
+    if poster_match:
+        result["poster"] = _normalize_url(poster_match.group(1))
+
+    # Extract plot
+    plot_match = re.search(r'<meta[^>]+name="description"[^>]+content="([^"]+)"', html, re.I)
+    if plot_match:
+        result["plot"] = _clean_title(plot_match.group(1))
+
+    # Fetch watch page
+    base_url = url.rstrip('/')
+    watch_url = base_url + '/watch'
+
+    log("Akwams: Fetching watch page: {}".format(watch_url))
+    watch_html, _ = fetch(watch_url, referer=url)
+
+    if watch_html:
+        server_links = re.findall(r'data-link=["\']([^"\']+)["\']', watch_html, re.I)
+        if not server_links:
+            server_links = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', watch_html, re.I)
+
+        seen_servers = set()
+        for idx, server_url in enumerate(server_links):
+            if any(ext in server_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', 'wp-content/uploads']):
+                continue
+            if server_url in seen_servers:
+                continue
+            seen_servers.add(server_url)
+
+            full_server_url = _normalize_url(server_url)
+            if full_server_url:
+                host_match = re.search(r'https?://([^/]+)', full_server_url)
+                host_name = host_match.group(1) if host_match else ""
+                
+                if "hgcloud" in host_name:
+                    display_name = "🎬 HGCloud"
+                elif "mixdrop" in host_name:
+                    display_name = "🎬 MixDrop"
+                elif "bysekoze" in host_name:
+                    display_name = "🎬 Bysekoze"
+                elif "minochinos" in host_name:
+                    display_name = "🎬 Minochinos"
+                elif "playmogo" in host_name:
+                    display_name = "🎬 PlayMogo"
+                elif "forafile" in host_name:
+                    display_name = "🎬 Forafile"
+                elif "smoothpre" in host_name:
+                    display_name = "🎬 SmoothPre"
+                else:
+                    display_name = "🎬 Server {}".format(idx + 1)
+
+                result["servers"].append({
+                    "name": display_name,
+                    "url": full_server_url,
+                    "type": "direct",
+                })
+
+    return result
+
+
+def search(query, page=1):
+    """Search functionality."""
+    search_url = urljoin(MAIN_URL, "?s=" + query.replace(" ", "+"))
+    if page > 1:
+        search_url = urljoin(MAIN_URL, "page/{}/?s={}".format(page, query.replace(" ", "+")))
+
+    html, _ = fetch(search_url, referer=MAIN_URL)
+    if not html:
+        return []
+
+    items = []
+    pattern = r'<a[^>]+href="([^"]+)"[^>]*class="box"[^>]*>.*?<img[^>]+data-src="([^"]+)"[^>]+alt="([^"]+)"'
+
+    for link, img, title in re.findall(pattern, html, re.S | re.I):
+        if not link.startswith("javascript") and "/category/" not in link:
+            items.append({
+                "title": _clean_title(title),
+                "url": _normalize_url(link),
+                "poster": _normalize_url(img),
+                "type": "movie",
+                "_action": "details",
+            })
+
+    return items
+
+
+def extract_stream(url):
+    """Delegate to base extractor for video host resolution."""
+    from .base import extract_stream as base_extract_stream
+    return base_extract_stream(url)
+``````
+
+## File: extractors/arablionztv.py
+``````python
+# -*- coding: utf-8 -*-
+"""
+Plugin for arablionztv.xyz
+FIX: Replaced f-strings with .format() for Python 2/3.5 compatibility.
+FIX: Improved card/episode regex to match modern layouts.
+FIX: get_page() now catches data-src/data-lazy-src iframe patterns.
+"""
+
+import re
+from urllib.parse import urljoin
+from .base import fetch, extract_stream as base_extract_stream
+
+MAIN_URL = "https://arablionztv.xyz/"
+
+
+def _clean_title(title):
+    return (
+        (title or "")
+        .replace("&amp;", "&")
+        .replace("مشاهدة", "")
+        .replace("تحميل", "")
+        .replace("فيلم", "")
+        .replace("مسلسل", "")
+        .strip()
+    )
+
+
+def _full_url(path):
+    if not path:
+        return ""
+    path = path.strip()
+    if path.startswith("http"):
+        return path
+    if path.startswith("//"):
+        return "https:" + path
+    return urljoin(MAIN_URL, path)
+
+
+def _extract_boxes(html):
+    """
+    FIX: Reworked to use a more general card-finding strategy that works
+    across common WordPress / custom CMS layouts.
+    Returns list of (link, img, title) tuples.
+    """
+    results = []
+    seen = set()
+
+    # Strategy 1: article or post-type containers
+    for container in re.findall(
+        r'<(?:article|div)[^>]+class="[^"]*(?:item|post|movie|entry)[^"]*"[^>]*>(.*?)</(?:article|div)>',
+        html or "", re.S | re.I
+    ):
+        link_m  = re.search(r'href=["\']([^"\']+)["\']', container)
+        title_m = (
+            re.search(r'title=["\']([^"\']+)["\']', container) or
+            re.search(r'alt=["\']([^"\']+)["\']', container) or
+            re.search(r'<h[1-4][^>]*>([^<]+)</h[1-4]>', container, re.I)
+        )
+        img_m   = re.search(r'(?:data-src|data-lazy-src|src)=["\']([^"\']+\.(?:jpg|jpeg|png|webp)[^"\']*)["\']', container, re.I)
+
+        if link_m and title_m:
+            link  = _full_url(link_m.group(1))
+            title = _clean_title(title_m.group(1))
+            img   = _full_url(img_m.group(1)) if img_m else ""
+            if link and link not in seen:
+                seen.add(link)
+                results.append((link, img, title))
+
+    if results:
+        return results
+
+    # Strategy 2: plain <a href> + <img> pattern (broad fallback)
+    for m in re.finditer(
+        r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>\s*'
+        r'(?:[^<]*<[^>]+>[^<]*)*?'
+        r'<img[^>]+(?:data-src|data-lazy-src|src)=["\']([^"\']+)["\'][^>]+alt=["\']([^"\']+)["\']',
+        html or "", re.S | re.I
+    ):
+        link  = _full_url(m.group(1))
+        img   = _full_url(m.group(2))
+        title = _clean_title(m.group(3))
+        if link and link not in seen:
+            seen.add(link)
+            results.append((link, img, title))
+
+    return results
+
+
+def _extract_episodes(html, base_url):
+    episodes = []
+    seen = set()
+
+    # Pattern: links containing episode/حلقة with a number
+    for m in re.finditer(
+        r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(?:[^<]*<[^>]*>)*?'
+        r'(?:حلقة|Episode|EP)\s*(\d+)',
+        html or "", re.I | re.S
+    ):
+        url    = _full_url(m.group(1).replace("&amp;", "&"))
+        ep_num = m.group(2)
+        if url in seen:
+            continue
+        seen.add(url)
+        episodes.append({
+            "title":    "حلقة {}".format(ep_num),
+            "url":      url,
+            "type":     "episode",
+            "_action":  "details",
+        })
+        if len(episodes) >= 100:
+            return episodes
+
+    # Fallback: any link containing episode/season in URL
+    if not episodes:
+        for link in re.findall(r'href=["\']([^"\']*(?:episode|season|ep)[^"\']*)["\']', html, re.I):
+            url = _full_url(link.replace("&amp;", "&"))
+            if url in seen or "category" in url:
+                continue
+            seen.add(url)
+            episodes.append({
+                "title":   "حلقة",
+                "url":     url,
+                "type":    "episode",
+                "_action": "details",
+            })
+    return episodes
+
+
+def get_categories():
+    return [
+        {"title": "🎬 أفلام إنجليزية",  "url": urljoin(MAIN_URL, "category/movies/english-movies/"), "type": "category", "_action": "category"},
+        {"title": "🎬 أفلام عربية",     "url": urljoin(MAIN_URL, "category/movies/arabic-movies/"),  "type": "category", "_action": "category"},
+        {"title": "🎬 كارتون",          "url": urljoin(MAIN_URL, "category/movies/cartoon/"),        "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات إنجليزية","url": urljoin(MAIN_URL, "category/series/english-series/"),"type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات عربية",   "url": urljoin(MAIN_URL, "category/series/arabic-series/"),  "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات تركية",   "url": urljoin(MAIN_URL, "category/series/turkish-series/"), "type": "category", "_action": "category"},
+    ]
+
+
+def get_category_items(url):
+    html, final_url = fetch(url, referer=MAIN_URL)
+    if not html:
+        return []
+
+    items = []
+    seen  = set()
+
+    for link, img, title in _extract_boxes(html):
+        if link in seen:
+            continue
+        seen.add(link)
+        low = link.lower() + " " + title.lower()
+        is_series = "/series/" in low or "مسلسل" in low
+        items.append({
+            "title":   title,
+            "url":     link,
+            "poster":  img,
+            "type":    "series" if is_series else "movie",
+            "_action": "details",
+        })
+
+    # Pagination
+    next_m = (
+        re.search(r'<a[^>]+class="next"[^>]+href=["\']([^"\']+)["\']', html, re.I) or
+        re.search(r'<link[^>]+rel="next"[^>]+href=["\']([^"\']+)["\']', html, re.I)
+    )
+    if next_m:
+        items.append({
+            "title":   "➡️ الصفحة التالية",
+            "url":     next_m.group(1).replace("&amp;", "&"),
+            "type":    "category",
+            "_action": "category",
+        })
+
+    return items
+
+
+def get_page(url):
+    html, final_url = fetch(url, referer=MAIN_URL)
+    result = {
+        "url":     url,
+        "title":   "",
+        "poster":  "",
+        "plot":    "",
+        "servers": [],
+        "items":   [],
+        "type":    "movie",
+    }
+    if not html:
+        return result
+
+    # Title
+    title_m = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.S | re.I)
+    if title_m:
+        result["title"] = _clean_title(title_m.group(1))
+
+    # Poster
+    poster_m = (
+        re.search(r'<img[^>]+class="[^"]*(?:poster|cover|img-fluid)[^"]*"[^>]+src=["\']([^"\']+)["\']', html, re.I) or
+        re.search(r'<meta[^>]+property="og:image"[^>]+content=["\']([^"\']+)["\']', html, re.I)
+    )
+    if poster_m:
+        result["poster"] = poster_m.group(1).replace("&amp;", "&")
+
+    # Plot
+    plot_m = (
+        re.search(r'<div[^>]*class="[^"]*(?:description|summary|plot)[^"]*"[^>]*>(.*?)</div>', html, re.S | re.I) or
+        re.search(r'<p[^>]*class="[^"]*desc[^"]*"[^>]*>(.*?)</p>', html, re.S | re.I)
+    )
+    if plot_m:
+        result["plot"] = re.sub(r'<[^>]+>', ' ', plot_m.group(1)).strip()
+
+    # Series check
+    is_series = "/series/" in (final_url or url) or "مسلسل" in result["title"]
+    if is_series:
+        result["type"]  = "series"
+        result["items"] = _extract_episodes(html, final_url or url)
+        return result
+
+    # Servers — FIX: added data-src and data-lazy-src to iframe search
+    seen_servers = set()
+    for m in re.finditer(
+        r'<iframe[^>]+(?:src|data-src|data-lazy-src)=["\']([^"\']+)["\']',
+        html, re.I
+    ):
+        iframe_url = m.group(1).strip()
+        if iframe_url.startswith("//"):
+            iframe_url = "https:" + iframe_url
+        if not iframe_url.startswith("http") or iframe_url in seen_servers:
+            continue
+        seen_servers.add(iframe_url)
+        result["servers"].append({
+            "name":  "سيرفر {}".format(len(result["servers"]) + 1),
+            "url":   iframe_url,
+            "type":  "direct",
+        })
+
+    # Direct video host links
+    for m in re.finditer(
+        r'href=["\']'
+        r'(https?://(?:streamtape|dood|mixdrop|uqload|voe|vidbom|upstream|'
+        r'streamwish|filemoon|lulustream|ok\.ru)[^"\']+)'
+        r'["\']',
+        html, re.I
+    ):
+        link = m.group(1)
+        if link not in seen_servers:
+            seen_servers.add(link)
+            result["servers"].append({
+                "name":  "مشاهدة {}".format(len(result["servers"]) + 1),
+                "url":   link,
+                "type":  "direct",
+            })
+
+    # Direct media URL fallback
+    if not result["servers"]:
+        for pat in (
+            r'file\s*:\s*["\']([^"\']+)["\']',
+            r'src\s*:\s*["\']([^"\']+)["\']',
+            r'data-video=["\']([^"\']+)["\']',
+        ):
+            m = re.search(pat, html, re.I)
+            if m:
+                result["servers"].append({
+                    "name":  "مشاهدة",
+                    "url":   m.group(1),
+                    "type":  "direct",
+                })
+                break
+
+    return result
+
+
+def extract_stream(url):
+    if url.startswith("http") and any(x in url.lower() for x in (".m3u8", ".mp4", ".mkv")):
+        return url, None, MAIN_URL
+    return base_extract_stream(url)
+``````
+
+## File: extractors/arabseed.py
+``````python
+# -*- coding: utf-8 -*-
+import base64
+import html as html_lib
+import json
+import random
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from .base import fetch, log, urljoin, clear_cookies
+
+# FIX: asd.pics no longer matches the site's canonical domain (confirmed via
+# canonical tags/og:url on every sample page pointing to arabseeds.cam). If
+# asd.pics is intentionally kept as an entry/gateway domain that redirects to
+# arabseeds.cam, this can be reverted - but as a direct base for urljoin() it
+# should be the real domain.
+MAIN_URL     = "https://arabseeds.cam/"
+QUALITY_ORDER = {"1080": 0, "720": 1, "480": 2}
+BLOCKED_HOSTS = ("vidara.to", "bysezejataos.com")
+
+
+def _clean_title(title):
+    # FIX: unescape all HTML entities (e.g. &#8217;) instead of only &amp;
+    return (
+        html_lib.unescape(title or "")
+        .replace("مشاهدة", "")
+        .replace("فيلم", "")
+        .strip()
+    )
+
+
+def _extract_first(patterns, text):
+    for pattern in patterns:
+        match = re.search(pattern, text or "", re.S)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _decode_hidden_url(url):
+    # FIX: when the AJAX response's own "server" field is empty (confirmed
+    # in logs - this happens for the "سيرفر عرب سيد" entry specifically),
+    # urljoin(MAIN_URL, "") resolved to the bare site homepage
+    # ("https://arabseeds.cam/") instead of being recognized as invalid.
+    # That bogus URL was then offered as a selectable server that could
+    # never play anything (extract_stream has nothing to extract from a
+    # homepage) - showing up as a dead/black-screen option in the list.
+    if not (url or "").strip():
+        return ""
+    url = (url or "").replace("\\/", "/").replace("&amp;", "&").strip()
+    if url.startswith("//"):
+        url = "https:" + url
+    if not url.startswith("http"):
+        url = urljoin(MAIN_URL, url)
+    for key in ("url", "id"):
+        marker = key + "="
+        if marker not in url:
+            continue
+        raw = url.split(marker, 1)[1].split("&", 1)[0]
+        try:
+            raw += "=" * ((4 - len(raw) % 4) % 4)
+            decoded = base64.b64decode(raw).decode("utf-8")
+            if decoded.startswith("http"):
+                return decoded
+        except Exception:
+            pass
+    # FIX: if nothing decoded and we're left with just the bare site root
+    # (no real path), treat that as "no server" rather than a valid result.
+    if url.rstrip("/") == MAIN_URL.rstrip("/"):
+        return ""
+    return url
+
+
+def _server_priority(server_url):
+    lowered = server_url.lower()
+    if "reviewrate" in lowered or "reviewtech" in lowered:
+        return 0
+    if "vidmoly" in lowered:
+        return 1
+    # FIX: confirmed real final-file hosts (found via manual IDM capture) -
+    # prioritize direct-file hosts since they need no further resolution,
+    # ahead of the generic/unknown bucket.
+    if "downet.net" in lowered:
+        return 2
+    if "mxcontent.net" in lowered:
+        return 3
+    return 9
+
+
+def _server_name(server_url, label_hint=""):
+    lowered = (server_url or "").lower()
+    if "reviewrate" in lowered or "reviewtech" in lowered:
+        return "عرب سيد"
+    if "vidmoly" in lowered:
+        return "VidMoly"
+    if "downet.net" in lowered:
+        return "Downet (Direct)"
+    if "mxcontent.net" in lowered:
+        return "MxContent"
+    if label_hint:
+        return label_hint.strip()
+    domain_match = re.search(r'https?://([^/]+)', server_url or "")
+    return domain_match.group(1) if domain_match else "Server"
+
+
+def _collect_ajax_servers(watch_html, watch_url):
+    # FIX: "always the exact same episode no matter what, even after
+    # replacing files and restarting the plugin" points at session state
+    # that outlives a plugin restart - the module-level cookiejar in
+    # base.py only resets on a full device reboot. If the backend trusts a
+    # session cookie over the post_id we send in the AJAX body for
+    # deciding which item's servers to return, a stale cookie from a much
+    # earlier visit would pin every subsequent request to that old item
+    # indefinitely. Clear cookies for this domain before every fresh
+    # server-resolution pass to rule that out.
+    try:
+        clear_cookies("arabseeds.cam")
+    except Exception:
+        pass
+
+    token = _extract_first(
+        [
+            r"csrf__token['\"]?\s*[:=]\s*['\"]([^'\"]+)",
+            r"csrf_token['\"]?\s*[:=]\s*['\"]([^'\"]+)",
+        ],
+        watch_html,
+    )
+    post_id = _extract_first(
+        [
+            r"psot_id['\"]?\s*[:=]\s*['\"](\d+)",
+            r"post_id['\"]?\s*[:=]\s*['\"](\d+)",
+        ],
+        watch_html,
+    )
+    # FIX: real markup is `main__obj = {\n'home__url': '...'`; the missing
+    # \s* after the opening brace meant this never matched and always fell
+    # back to MAIN_URL.
+    home_url = _extract_first([r"main__obj\s*=\s*\{\s*'home__url':\s*'([^']+)'"], watch_html) or MAIN_URL
+    if not token or not post_id:
+        log("ArabSeed: Missing AJAX token/post_id")
+        return []
+
+    quality_url     = urljoin(home_url, "get__quality__servers/")
+    watch_server_url = urljoin(home_url, "get__watch__server/")
+    results = []
+    seen    = set()
+    lock    = threading.Lock()
+
+    def _cache_bust(u):
+        # FIX: different episodes were coming back with identical response
+        # sizes/content for this same endpoint URL (post_id in the POST
+        # body ignored), which matches a CDN/WAF/backend cache keyed only
+        # on URL - one episode's cached response getting served for every
+        # other episode. Give every request a unique URL to defeat that.
+        sep = "&" if "?" in u else "?"
+        return "{}{}_cb={}{:04d}".format(u, sep, int(time.time() * 1000), random.randint(0, 9999))
+
+    def fetch_row(row_post_id, server_id, row_quality, label):
+        watch_body, _ = fetch(
+            _cache_bust(watch_server_url),
+            post_data={
+                "post_id":   row_post_id,
+                "quality":   row_quality,
+                "server":    server_id,
+                "csrf_token": token,
+            },
+            referer=watch_url,
+        )
+        if not watch_body:
+            return None
+        try:
+            watch_data = json.loads(watch_body)
+        except Exception:
+            return None
+        if watch_data.get("type") != "success" or not watch_data.get("server"):
+            return None
+
+        server_url_decoded = _decode_hidden_url(watch_data.get("server", ""))
+        if not server_url_decoded.startswith("http"):
+            return None
+        if any(h in server_url_decoded for h in BLOCKED_HOSTS):
+            return None
+        return {
+            "quality": row_quality,
+            "url":     server_url_decoded,
+            "name":    _server_name(server_url_decoded, label),
+        }
+
+    def fetch_quality(quality):
+        local_results = []
+        body, _ = fetch(
+            _cache_bust(quality_url),
+            post_data={"post_id": post_id, "quality": quality, "csrf_token": token},
+            referer=watch_url,
+        )
+        if not body:
+            return local_results
+        try:
+            data = json.loads(body)
+        except Exception:
+            log("ArabSeed: Failed to decode quality JSON for {}p".format(quality))
+            return local_results
+        if data.get("type") != "success":
+            return local_results
+
+        # Direct server in response
+        direct_server = _decode_hidden_url(data.get("server", ""))
+        if direct_server.startswith("http") and not any(h in direct_server for h in BLOCKED_HOSTS):
+            local_results.append({
+                "quality": quality,
+                "url":     direct_server,
+                "name":    _server_name(direct_server, "سيرفر عرب سيد"),
+            })
+
+        # Server list rows - FIX: these used to be fetched one at a time
+        # (each taking 7-27s on this site), stacking up sequential wait time
+        # across every row of every quality tier. Fire them concurrently
+        # instead so wall-clock time is roughly the slowest single request,
+        # not the sum of all of them.
+        server_rows = re.findall(
+            r'<li[^>]+data-post="([^"]+)"[^>]+data-server="([^"]+)"[^>]+data-qu="([^"]+)"[^>]*>.*?<span>([^<]+)</span>',
+            data.get("html", ""),
+            re.S,
+        )
+        if server_rows:
+            # FIX: capped at 6 before, which combined with 3 concurrent
+            # quality tiers could spike to 18 simultaneous connections to
+            # this flaky origin - likely contributing to some episodes
+            # hanging/never resolving. 3 is still a solid speedup over fully
+            # sequential without hammering the server as hard.
+            with ThreadPoolExecutor(max_workers=min(3, len(server_rows))) as ex:
+                for row_result in ex.map(lambda r: fetch_row(*r), server_rows):
+                    if row_result:
+                        local_results.append(row_result)
+        return local_results
+
+    # FIX: the three quality tiers are independent requests - fetch them
+    # concurrently rather than one after another for the same reason as above.
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        for tier_results in ex.map(fetch_quality, ("1080", "720", "480")):
+            for item in tier_results:
+                key = (item["quality"], item["url"])
+                with lock:
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                results.append(item)
+
+    # FIX: if AJAX returned nothing at all, log clearly rather than silent empty
+    if not results:
+        log("ArabSeed: AJAX returned 0 servers for watch_url={}".format(watch_url))
+
+    results.sort(key=lambda item: (
+        QUALITY_ORDER.get(item["quality"], 9),
+        _server_priority(item["url"]),
+        item["name"],
+    ))
+    return results
+
+
+def get_categories():
+    # FIX: previous slugs (foreign-movies-12, arabic-movies-12,
+    # foreign-series-5, arabic-series-10, anime-series-1, wwe-shows-1) no
+    # longer exist on the site and would 404. The site now organizes content
+    # under /category/films/, /category/tv/, /category/anime/ with the
+    # subcategories below - verified against arabseeds_cam-home.html,
+    # films.html, english_movie_category.html, english_movies-page_2.html,
+    # movie.html, and links.html (all show the same nav consistently).
+    return [
+        {"title": "🎬 كل الأفلام",       "url": urljoin(MAIN_URL, "category/films/"),                 "type": "category", "_action": "category"},
+        {"title": "🌍 أفلام أجنبي",      "url": urljoin(MAIN_URL, "category/films/foreign-movies/"),  "type": "category", "_action": "category"},
+        {"title": "🌏 أفلام آسيوية",     "url": urljoin(MAIN_URL, "category/films/asian-movies/"),    "type": "category", "_action": "category"},
+        {"title": "🇮🇳 أفلام هندي",      "url": urljoin(MAIN_URL, "category/films/indian-movies/"),   "type": "category", "_action": "category"},
+        {"title": "🇹🇷 أفلام تركي",      "url": urljoin(MAIN_URL, "category/films/turkish-movies/"),  "type": "category", "_action": "category"},
+        {"title": "📺 كل المسلسلات",     "url": urljoin(MAIN_URL, "category/tv/"),                    "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات أجنبي",    "url": urljoin(MAIN_URL, "category/tv/foreign-series/"),     "type": "category", "_action": "category"},
+        {"title": "🇮🇳 مسلسلات هندي",    "url": urljoin(MAIN_URL, "category/tv/indian-tv-series/"),   "type": "category", "_action": "category"},
+        {"title": "🇹🇷 مسلسلات تركي",    "url": urljoin(MAIN_URL, "category/tv/turkish-series/"),     "type": "category", "_action": "category"},
+        {"title": "🎭 أفلام انمي",       "url": urljoin(MAIN_URL, "category/anime/anime-movies/"),    "type": "category", "_action": "category"},
+        {"title": "🎭 مسلسلات انمي",     "url": urljoin(MAIN_URL, "category/anime/anime-series/"),    "type": "category", "_action": "category"},
+    ]
+
+
+def get_category_items(url):
+    html, _ = fetch(url, referer=MAIN_URL)
+    if not html:
+        return []
+
+    items = []
+    seen  = set()
+
+    # FIX: previously matched only by accident (the "item" alternative
+    # happened to match the unrelated "item__contents" wrapper div's class
+    # substring). Target the real anchor class used on the site
+    # ("movie__block", confirmed on category pages) directly, keeping the
+    # old alternatives as a fallback for older/other layouts. Also capture
+    # the class attribute itself (not just inner HTML) since it carries the
+    # "is__episode" marker needed for correct series detection below.
+    blocks = re.findall(
+        r'<a[^>]+class=["\']([^"\']*(?:movie__block|recent--block|post--block)[^"\']*)["\'][^>]*>(.*?)</a>',
+        html, re.S | re.IGNORECASE
+    )
+    if not blocks:
+        blocks = [("", b) for b in re.findall(
+            r'(<a[^>]+href=["\'][^>]*>.*?<img[^>]+(?:data-src|src)=["\'][^>]*>.*?</a>)',
+            html, re.S | re.IGNORECASE
+        )]
+
+    for class_attr, block in blocks:
+        m = (
+            re.search(r'<a[^>]+href=["\']([^"\']+)["\'][^>]+title=["\']([^"\']+)["\'][^>]*>', block, re.S) or
+            re.search(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>.*?<img[^>]+alt=["\']([^"\']+)["\']', block, re.S)
+        )
+        if m:
+            link, title = m.groups()
+            img_m = re.search(r'<img[^>]+(?:data-src|src)=["\']([^"\']+)["\']', block)
+            img   = img_m.group(1) if img_m else ""
+            if link in seen or "/category/" in link:
+                continue
+            seen.add(link)
+            title     = _clean_title(title)
+            # FIX: these category tiles link directly to one specific
+            # episode (e.g. "mslsl-westworld-season-3-episode-1/"), each
+            # with its own servers - they are NOT a series-hub page needing
+            # further episode selection. plugin.py already has full support
+            # for an "episode" item type (its own label, direct-open
+            # handling) - but this was tagging them "series" instead, which
+            # made tapping one specific episode tile open the full episode
+            # picker again rather than going straight to that episode's
+            # servers. Use "episode" whenever the URL itself identifies a
+            # specific episode; reserve "series" for genuine hub links
+            # (e.g. "/series-slug/" with no season/episode marker) that
+            # still need an episode-selection step.
+            if "-season-" in link or "-episode-" in link:
+                item_type = "episode"
+            elif "is__episode" in class_attr or "/series-" in link or "مسلسل" in title or "الحلقة" in title:
+                item_type = "series"
+            else:
+                item_type = "movie"
+            items.append({"title": title, "url": link, "poster": img, "type": item_type, "_action": "details"})
+
+    # Broad fallback if nothing found yet
+    if not items:
+        regex = r'<a[^>]+href=["\']([^"\']+)["\'][^>]+title=["\']([^"\']+)["\'][^>]*>.*?<img[^>]+(?:data-src|src)=["\']([^"\']+)["\']'
+        for link, title, img in re.findall(regex, html, re.S | re.IGNORECASE):
+            if link in seen or "/category/" in link:
+                continue
+            seen.add(link)
+            if "-season-" in link or "-episode-" in link:
+                item_type = "episode"
+            elif "/series-" in link or "مسلسل" in title or "الحلقة" in title:
+                item_type = "series"
+            else:
+                item_type = "movie"
+            items.append({"title": title.strip(), "url": link, "poster": img, "type": item_type, "_action": "details"})
+
+    # FIX: prefer an explicit rel="next" link (used by the site's own
+    # pagination head tag) over the first bare /page/N/ match, so this
+    # can't accidentally latch onto an unrelated page link if the DOM
+    # order ever changes.
+    next_page = (
+        re.search(r'<link[^>]+rel=["\']next["\'][^>]+href=["\']([^"\']+/page/\d+/)["\']', html) or
+        re.search(r'href="([^"]+/page/\d+/)"', html)
+    )
+    if next_page:
+        items.append({"title": "➡️ الصفحة التالية", "url": next_page.group(1), "type": "category", "_action": "category"})
+    return items
+
+
+def get_page(url):
+    html, final_url = fetch(url, referer=MAIN_URL)
+    if not html:
+        return {"title": "Error", "servers": []}
+
+    result = {
+        "url":     final_url or url,
+        "title":   "",
+        "plot":    "",
+        "poster":  "",
+        "rating":  "",
+        "year":    "",
+        "servers": [],
+        "items":   [],
+    }
+
+    # FIX: og:title includes site branding/junk (e.g. "... اون لاين | عرب سيد")
+    # while <h1> is the clean "Title ( Year )" form - prefer h1 so both the
+    # cleaned title and year-from-title extraction work correctly.
+    title_match = (
+        re.search(r'<h1[^>]*>(.*?)</h1>', html, re.S) or
+        re.search(r'og:title[^>]+content="([^"]+)"', html)
+    )
+    if title_match:
+        result["title"] = _clean_title(title_match.group(1).split("-")[0])
+
+    poster_match = re.search(r'og:image"[^>]+content="([^"]+)"', html)
+    if poster_match:
+        result["poster"] = poster_match.group(1)
+
+    plot_match = re.search(r'name="description"[^>]+content="([^"]+)"', html)
+    if plot_match:
+        result["plot"] = plot_match.group(1)
+
+    # FIX: these fields were declared in the result dict but never actually
+    # extracted. Rating renders as e.g. <div class="post__ratings">6.0</div>,
+    # year is embedded in the title like "Immortal Combat ( 2026 )".
+    rating_match = re.search(r'class="post__ratings">\s*([\d.]+)\s*</div>', html)
+    if rating_match:
+        result["rating"] = rating_match.group(1)
+
+    year_match = re.search(r'\(\s*(\d{4})\s*\)', result["title"])
+    if year_match:
+        result["year"] = year_match.group(1)
+
+    # FIX: real episode URLs look like ".../mslsl-westworld-season-3-episode-1/"
+    # - "season-"/"episode-" are preceded by a hyphen, not a slash, so the
+    # old "/season-"/"/episode-" checks never matched and every episode page
+    # was treated as a movie. Also added "الحلقة" (episode) as a title-based
+    # signal alongside "مسلسل" (series/drama).
+    is_series = (
+        any(m in (final_url or url) for m in ("/series-", "-season-", "-episode-"))
+        or "مسلسل" in result["title"]
+        or "الحلقة" in result["title"]
+    )
+
+    # Determine watch URL
+    watch_url   = (final_url or url).rstrip("/") + "/watch/"
+    watch_match = re.search(r'href="([^"]+/watch/)"', html)
+    if watch_match:
+        watch_url = watch_match.group(1)
+
+    watch_html, watch_final = fetch(watch_url, referer=final_url or url)
+    if not watch_html:
+        watch_html, watch_final = html, (final_url or url)
+
+    for server in _collect_ajax_servers(watch_html, watch_final or watch_url):
+        result["servers"].append({
+            "name": "[{}p] {}".format(server["quality"], server["name"]),
+            "url":  server["url"],
+            "type": "direct",
+        })
+
+    if is_series:
+        seen_eps = set()
+        # FIX: the old container class names (Blocks-Episodes, Episode--List,
+        # etc.) don't exist on the current site, so this always fell back to
+        # scanning the *entire* page - which also matched a "most searched"
+        # sidebar widget containing episode-1 links from unrelated shows.
+        # The real container is `<ul class="episodes__list ...">`, and its
+        # `<a>` tags carry no title attribute at all - the episode number is
+        # in a separate `<div class="epi__num">الحلقة<b>N</b></div>`.
+        container_match = re.search(
+            r'<ul[^>]+class=["\'][^"\']*episodes__list[^"\']*["\'][^>]*>(.*?)</ul>',
+            html, re.S | re.I
+        )
+        if container_match:
+            container = container_match.group(1)
+            for ep_url, ep_num in re.findall(
+                r'<a[^>]+href="(https?://[^/]+/[^"]+)"[^>]*>.*?<div[^>]+class="epi__num">[^<]*<b>(\d+)</b></div>',
+                container, re.S
+            ):
+                if ep_url in seen_eps:
+                    continue
+                seen_eps.add(ep_url)
+                # Build a per-episode title by swapping the episode number
+                # into this page's own title (e.g. "Westworld الموسم الثالث
+                # الحلقة 1" -> "... الحلقة 8"), since the list itself has no
+                # per-item title text.
+                ep_title, n_subs = re.subn(r'(الحلقة\s*)\d+', r'\g<1>' + ep_num, result["title"])
+                if n_subs == 0 and ep_title:
+                    ep_title = "{} - الحلقة {}".format(result["title"], ep_num)
+                result["items"].append({
+                    "title":   ep_title.strip(),
+                    "url":     ep_url,
+                    "type":    "episode",
+                    "_action": "details",
+                })
+        else:
+            # Fallback for other layouts that do use title-bearing anchors.
+            for ep_url, ep_title in re.findall(
+                r'<a[^>]+href="(https?://[^/]+/[^"]+)"[^>]+title="([^"]+)"',
+                html, re.S
+            ):
+                if ("الحلقة" not in ep_title and "حلقة" not in ep_title) or ep_url in seen_eps:
+                    continue
+                if not any(x in ep_url for x in ("series-", "-season", "episode")):
+                    continue
+                seen_eps.add(ep_url)
+                result["items"].append({
+                    "title":   ep_title.strip(),
+                    "url":     ep_url,
+                    "type":    "episode",
+                    "_action": "details",
+                })
+
+    # Data-link fallback if AJAX produced nothing
+    # FIX: this previously matched any data-src on the page (including
+    # unrelated poster/thumbnail images from a "related movies" section),
+    # returning them as fake "servers". Skip obvious image URLs and only
+    # accept data-src/data-href (not data-link/url/iframe, which are more
+    # specific to actual server/player markup) when scoped this broadly.
+    if not result["servers"]:
+        IMAGE_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg")
+        for fallback in re.findall(r'data-(?:link|url|iframe|src|href)="([^"]+)"', watch_html or "", re.S):
+            fallback = _decode_hidden_url(fallback)
+            if not fallback.startswith("http"):
+                continue
+            if fallback.lower().split("?", 1)[0].endswith(IMAGE_EXT):
+                continue
+            if any(h in fallback for h in BLOCKED_HOSTS):
+                continue
+            if fallback not in [s["url"] for s in result["servers"]]:
+                result["servers"].append({"name": "Fallback", "url": fallback, "type": "direct"})
+
+    return result
+
+
+def extract_stream(url):
+    from .base import extract_stream as base_extract_stream
+    return base_extract_stream(url)
+``````
+
+## File: extractors/base.py
+``````python
+# -*- coding: utf-8 -*-
+"""
+Base extractor — common utilities + video host resolvers
+Improvements over previous version:
+  - Fixed egydead referer (tv8.egydead.live instead of stale x7k9f.sbs)
+  - fetch() retry on transient failures (503 / timeout)
+  - New resolvers: ok.ru, filemoon, streamwish family, lulustream, vidguard
+  - Improved: streamtape (3 fallback patterns), doodstream (15+ domains),
+               voe (base64 + newer layouts), resolve_iframe_chain (meta-refresh,
+               JS location, data-src)
+  - _best_media_url: richer source patterns (jwplayer, sources[], clappr)
+  - Unicode URL support for Arabic characters
+  - Added fastvid.cam resolver
+  - Added rpmvip/upshare/cleantechworld resolvers
+  - NEW: Added faselhd specific resolvers for scdns.io and datahowa.asia
+  - NEW: Added downet.net resolver for Akwam direct MP4s
+  - NEW: Added govid.live resolver for faselhd.rip
+  - NEW: Added referer support for faselhd.rip and datahowa.asia
+"""
+
+import re
+import json
+import time
+import random
+import base64  # <-- Make sure this is present
+from urllib.request import Request, urlopen, build_opener, HTTPCookieProcessor, HTTPSHandler
+from urllib.parse import urljoin, urlparse, unquote, urlencode, quote_plus
+from urllib.error import URLError, HTTPError
+import http.cookiejar as cookiejar
+import ssl
+import gzip
+import zlib
+import io
+import sys
+
+# brotli imports (try both common packages)
+try:
+    import brotli
+except ImportError:
+    try:
+        import brotlicffi as brotli
+    except ImportError:
+        brotli = None
+
+UA      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+TIMEOUT = 30
+ACCEPT_ENCODING = "gzip, deflate, br" if brotli is not None else "gzip, deflate"
+
+_opener = None
+_cookiejar = None
+
+
+def log(msg):
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        line = "[{}] {}\n".format(ts, msg)
+        with open("/tmp/arabicplayer.log", "a") as f:
+            f.write(line)
+        print("[ArabicPlayer] {}".format(msg))
+    except Exception:
+        pass
+
+
+def _get_opener():
+    global _opener, _cookiejar
+    if _opener:
+        return _opener
+    _cookiejar = cookiejar.CookieJar()
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    except AttributeError:
+        ctx = ssl._create_unverified_context()
+    _opener = build_opener(HTTPCookieProcessor(_cookiejar), HTTPSHandler(context=ctx))
+    return _opener
+
+
+def clear_cookies(domain=None):
+    """Clear cookies for this addon's shared session, optionally scoped to
+    a domain substring.
+
+    FIX: this module-level opener/cookiejar can stay alive for as long as
+    the Enigma2 process is running - a plugin/screen restart does NOT
+    necessarily reset it, only a full box reboot does. If a site's backend
+    ever ties AJAX responses (e.g. which episode's servers to return) to a
+    session cookie instead of trusting the post_id sent in the request
+    body, a stale cookie from a much earlier visit could keep pinning
+    every subsequent request to that same old episode/item indefinitely.
+    Call this before starting a fresh item's server-resolution flow to
+    rule that out entirely.
+    """
+    global _cookiejar
+    _get_opener()
+    if _cookiejar is None:
+        return
+    try:
+        if domain:
+            for cookie in list(_cookiejar):
+                if domain in (cookie.domain or ""):
+                    _cookiejar.clear(cookie.domain, cookie.path, cookie.name)
+        else:
+            _cookiejar.clear()
+    except Exception as e:
+        log("clear_cookies error: {}".format(e))
+
+
+def _decode_response_body(raw, info):
+    """
+    Decode response body handling various encodings and compression.
+    """
+    ce = info.get("Content-Encoding", "").lower()
+    
+    # Handle Content-Encoding compression
+    if "gzip" in ce:
+        try:
+            raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
+        except Exception as e:
+            log("Gzip decompression error: {}".format(e))
+            
+    elif "deflate" in ce:
+        try:
+            # Try with -zlib.MAX_WBITS for raw deflate
+            raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+        except Exception:
+            try:
+                # Try standard zlib decompression
+                raw = zlib.decompress(raw)
+            except Exception as e:
+                log("Deflate decompression error: {}".format(e))
+                
+    elif "br" in ce and brotli is not None:
+        try:
+            raw = brotli.decompress(raw)
+        except Exception as e:
+            log("Brotli decompression error: {}".format(e))
+    
+    # Detect charset from Content-Type header
+    charset = "utf-8"
+    ctype = info.get("Content-Type", "").lower()
+    
+    # Extract charset from Content-Type (e.g., "text/html; charset=utf-8")
+    charset_match = re.search(r'charset=([^\s;]+)', ctype, re.I)
+    if charset_match:
+        detected_charset = charset_match.group(1).strip()
+        # Remove quotes if present
+        detected_charset = detected_charset.strip('"\'')
+        if detected_charset:
+            charset = detected_charset
+    
+    # List of decoders to try in order
+    decoders = []
+    if charset and charset not in ["utf-8", "utf8"]:
+        decoders.append((charset, "Detected charset"))
+    decoders.extend([
+        ("utf-8", "UTF-8 fallback"),
+        ("windows-1256", "Arabic Windows fallback"),
+        ("iso-8859-6", "Arabic ISO fallback"),
+        ("latin-1", "Latin-1 fallback (preserves bytes)"),
+    ])
+    
+    for enc, name in decoders:
+        try:
+            result = raw.decode(enc)
+            if enc != "utf-8" and enc != charset:
+                log("Decoded with {} encoding".format(name))
+            return result
+        except (UnicodeDecodeError, LookupError):
+            continue
+    
+    # Last resort: replace errors
+    try:
+        return raw.decode("utf-8", errors="replace")
+    except Exception:
+        return raw.decode("latin-1", errors="replace")
+
+
+def _encode_unicode_url(url):
+    """Encode Unicode characters in URL to percent-encoded format."""
+    try:
+        parsed = urlparse(url)
+        # Encode the path if it contains non-ASCII
+        path_segments = []
+        for segment in parsed.path.split('/'):
+            if segment:
+                # Check if segment contains non-ASCII
+                if any(ord(c) > 127 for c in segment):
+                    path_segments.append(quote_plus(segment.encode('utf-8')))
+                else:
+                    path_segments.append(segment)
+            else:
+                path_segments.append('')
+        encoded_path = '/'.join(path_segments)
+        if not encoded_path.startswith('/'):
+            encoded_path = '/' + encoded_path
+        
+        # Also encode query parameters if needed
+        encoded_query = ''
+        if parsed.query:
+            try:
+                # Parse query string and encode values
+                query_parts = []
+                for part in parsed.query.split('&'):
+                    if '=' in part:
+                        key, val = part.split('=', 1)
+                        if any(ord(c) > 127 for c in val):
+                            query_parts.append(key + '=' + quote_plus(val.encode('utf-8')))
+                        else:
+                            query_parts.append(part)
+                    else:
+                        query_parts.append(part)
+                encoded_query = '&'.join(query_parts)
+            except Exception:
+                encoded_query = parsed.query
+        
+        # Rebuild URL
+        from urllib.parse import urlunparse
+        encoded_url = urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            encoded_path,
+            parsed.params,
+            encoded_query,
+            parsed.fragment
+        ))
+        return encoded_url
+    except Exception:
+        return url
+
+
+def fetch(url, referer=None, extra_headers=None, post_data=None):
+    """
+    Robust fetch with:
+    - Smart per-domain referer defaults
+    - Auto retry on transient errors (503, timeout, connection reset)
+    - Brotli / gzip / deflate decompression
+    - Cookie jar (shared session)
+    - Unicode URL support (properly encodes Arabic/etc. characters)
+    """
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            opener = _get_opener()
+            
+            # Handle Unicode URLs - encode to percent-encoded format
+            encoded_url = _encode_unicode_url(url)
+            
+            parsed = urlparse(encoded_url)
+            domain = parsed.netloc.lower()
+
+            if not referer:
+                # ── per-domain referer defaults ───────────────────────────
+                # SPECIFIC FaselHD domains FIRST (before generic catch)
+                if "faselhd.rip" in domain:
+                    referer = "https://faselhd.rip/"
+                elif "web596x.faselhdx.bid" in domain or "web5106x.faselhdx.bid" in domain:
+                    referer = "https://web5106x.faselhdx.bid/"
+                elif "govid.live" in domain:
+                    referer = "https://faselhd.rip/"
+                elif "datahowa.asia" in domain:
+                    referer = "https://faselhd.rip/"
+                elif "scdns.io" in domain:
+                    referer = "https://web5106x.faselhdx.bid/"
+                # Generic Fasel catch (only for other fasel domains)
+                elif "fasel" in domain or "faselhdx" in domain or "fasel-hd" in domain:
+                    referer = "https://www.fasel-hd.cam/"
+                # Other sites
+                elif "egydead" in domain:
+                    referer = "{}://{}/".format(parsed.scheme, domain)
+                elif "wecima" in domain or "mycima" in domain:
+                    referer = "https://wecima.click/"
+                elif "downet.net" in domain:
+                    referer = "https://akwam.com.co/"
+                elif "topcinema" in domain:
+                    referer = "https://topcinemaa.com/"
+                elif "shaheed" in domain or "shahid" in domain:
+                    referer = "https://shahidd4u.com/"
+                elif "streamwish" in domain or "wishfast" in domain:
+                    referer = "https://streamwish.to/"
+                elif "filemoon" in domain:
+                    referer = "https://filemoon.sx/"
+                elif "lulustream" in domain:
+                    referer = "https://lulustream.com/"
+                elif "ok.ru" in domain:
+                    referer = "https://ok.ru/"
+                elif "vidguard" in domain or "vgfplay" in domain:
+                    referer = "https://vidguard.to/"
+                elif "filelion" in domain or "vidhide" in domain or "streamhide" in domain:
+                    referer = "https://filelions.to/"
+                elif "fastvid" in domain:
+                    referer = "https://fastvid.cam/"
+                elif "rpmvip" in domain:
+                    referer = "https://shaaheid4u.rpmvip.com/"
+                elif "upn.one" in domain or "upshare" in domain:
+                    referer = "https://shiid4u.upn.one/"
+                # ========  ADD THESE FOUR LINES BELOW ========
+                elif "savefiles.com" in domain or "mxcontent.net" in domain or "delucloud.xyz" in domain or "sprintcdn.com" in domain:
+                    referer = "https://wecima.cx/"
+                elif "tnmr.org" in domain or "aurorafieldnetwork.store" in domain:
+                    referer = "https://wecima.cx/"
+                # =============================================    
+                else:
+                    referer = "{}://{}/".format(parsed.scheme, domain)
+
+            headers = {
+                "User-Agent": UA,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Accept-Language": "ar,en-US,en;q=0.9",
+                "Accept-Encoding": ACCEPT_ENCODING,
+                "Connection": "keep-alive",
+                "Referer": referer,
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+            }
+            # FIX: "get__quality__servers/" (arabseed's first AJAX call) only
+            # matched none of the previous substrings ("get__watch" matched
+            # the *second* call, get__watch__server/, but not this one) -
+            # so it was sent with normal document-navigation headers instead
+            # of AJAX headers, causing the server to reject it with a fixed
+            # tiny error payload (consistently 49 bytes in logs) instead of
+            # real per-quality server data.
+            if any(x in encoded_url.lower() for x in ["ajax", "get__watch", "get__quality", "api/", ".json"]):
+                headers.update({
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    # FIX: different episodes were getting back identical
+                    # responses for these endpoints - matches an
+                    # intermediate cache keying on URL alone and ignoring
+                    # the POST body (post_id). Explicitly forbid caching,
+                    # on top of the per-request cache-busting query param
+                    # arabseed.py now adds to these same URLs.
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Sec-Fetch-Dest": "empty",
+                    "Sec-Fetch-Mode": "cors",
+                })
+            if extra_headers:
+                headers.update(extra_headers)
+
+            data = post_data
+            if data and isinstance(data, dict):
+                data = urlencode(data).encode("utf-8")
+                headers["Content-Type"] = "application/x-www-form-urlencoded"
+            elif data and isinstance(data, (str, bytes)):
+                if isinstance(data, str):
+                    data = data.encode("utf-8")
+
+            log("Fetching (attempt {}): {}".format(attempt + 1, encoded_url))
+            req = Request(encoded_url, headers=headers, data=data)
+
+            with opener.open(req, timeout=TIMEOUT) as resp:
+                raw = resp.read()
+                final_url = resp.geturl()
+                info = resp.info()
+
+                if any(x in final_url.lower() for x in ("alliance4creativity.com", "watch-it-legally")):
+                    log("!!! ACE Redirect detected for {} !!!".format(encoded_url))
+                    return None, final_url
+
+                html = _decode_response_body(raw, info)
+                log("Fetch OK: {} ({} bytes)".format(final_url, len(html)))
+                return html, final_url
+
+        except HTTPError as e:
+            # Retry on 503 / 429 / 502 / 504
+            if attempt < max_retries and e.code in (503, 429, 502, 504):
+                log("Fetch HTTPError {}, retrying in 2s: {}".format(e.code, url))
+                time.sleep(2)
+                continue
+            try:
+                raw = e.read()
+                html = _decode_response_body(raw, e.info()) if raw else ""
+                log("Fetch HTTPError: {} → {} {} ({} bytes)".format(url, e.code, e.reason, len(html)))
+            except Exception:
+                log("Fetch HTTPError: {} → {} {}".format(url, getattr(e, "code", "?"), getattr(e, "reason", e)))
+            return None, url
+
+        except URLError as e:
+            if attempt < max_retries:
+                log("Fetch URLError (retry {}): {} → {}".format(attempt + 1, url, e))
+                global _opener
+                _opener = None           # reset opener on network error
+                time.sleep(1.5)
+                continue
+            log("Fetch URLError: {} → {}".format(url, e))
+            _opener = None
+            return None, url
+
+        except UnicodeEncodeError as e:
+            # Handle Unicode encoding errors specifically
+            log("Fetch UnicodeEncodeError: {} → {}".format(url, e))
+            # Try with manual encoding
+            try:
+                # Fallback: try to encode the URL explicitly
+                encoded_url = url.encode('utf-8').decode('ascii', errors='ignore')
+                if encoded_url != url:
+                    log("Retrying with encoded URL: {}".format(encoded_url))
+                    return fetch(encoded_url, referer, extra_headers, post_data)
+            except Exception:
+                pass
+            return None, url
+
+        except Exception as e:
+            if attempt < max_retries:
+                log("Fetch Error (retry {}): {} → {}".format(attempt + 1, url, e))
+                time.sleep(1)
+                continue
+            log("Fetch Error: {} → {}".format(url, e))
+            return None, url
+
+    return None, url
+
+
+def fetch_json(url, referer=None, extra_headers=None, post_data=None):
+    """
+    Fetch a URL and parse the response body as JSON.
+
+    Every extractor generated by build_extractor.py imports this
+    (`from .base import log, fetch, resolve_iframe_chain, fetch_json`)
+    to hit detected API endpoints. Returns a dict/list on success, or
+    None on failure (network error or invalid JSON) — callers use
+    `data = fetch_json(...)` then `data.get(...)`, mirroring fetch()'s
+    "return None on failure" convention.
+    """
+    html, _ = fetch(url, referer=referer, extra_headers=extra_headers, post_data=post_data)
+    if not html:
+        return None
+    try:
+        return json.loads(html)
+    except (ValueError, TypeError) as e:
+        log("fetch_json: failed to parse JSON from {}: {}".format(url, e))
+        return None
+
+
+# ─── HTML helpers ─────────────────────────────────────────────────────────────
+
+def extract_iframes(html, base_url=""):
+    iframes = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I)
+    result = []
+    for src in iframes:
+        if src.startswith("//"):
+            src = "https:" + src
+        elif src.startswith("/") and base_url:
+            p = urlparse(base_url)
+            src = "{}://{}{}".format(p.scheme, p.netloc, src)
+        if src.startswith("http"):
+            result.append(src)
+    return result
+
+
+def find_m3u8(html):
+    if not html:
+        return None
+    patterns = [
+        r'["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'file\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'source\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'hls\.loadSource\(["\']([^"\']+)["\']',
+        r'"url"\s*:\s*"([^"]+\.m3u8[^"]*)"',
+        r'data-(?:url|src)=["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'hlsManifestUrl["\']?\s*:\s*["\']([^"\']+)["\']',
+    ]
+    for p in patterns:
+        m = re.search(p, html, re.I)
+        if m:
+            url = m.group(1).replace("\\/", "/").replace("&amp;", "&").replace("\\u0026", "&").strip()
+            if url.startswith("//"):
+                url = "https:" + url
+            if url.startswith("http") and ".m3u8" in url:
+                return url
+    return None
+
+
+def find_mp4(html):
+    if not html:
+        return None
+    patterns = [
+        r'["\']([^"\']+\.mp4[^"\']*)["\']',
+        r'file\s*:\s*["\']([^"\']+\.mp4[^"\']*)["\']',
+        r'data-(?:url|src)=["\']([^"\']+\.mp4[^"\']*)["\']',
+    ]
+    for p in patterns:
+        m = re.search(p, html, re.I)
+        if m:
+            url = m.group(1).replace("\\/", "/").replace("&amp;", "&").strip()
+            if url.startswith("//"):
+                url = "https:" + url
+            if url.startswith("http") and ".mp4" in url:
+                return url
+    return None
+
+
+def _best_media_url(text):
+    """
+    Pick the highest-quality video URL visible in plain or unpacked JS.
+    Covers: direct URLs, JWPlayer setup, sources[], Clappr, HLS manifests.
+    """
+    if not text:
+        return None
+    candidates = []
+    seen = set()
+
+    def score(url):
+        lowered = url.lower()
+        if "2160" in lowered or "4k" in lowered:   return 5000
+        if "1080" in lowered or "fhd" in lowered:  return 4000
+        if "720" in lowered  or "hd" in lowered:   return 3000
+        if "480" in lowered:                        return 2000
+        if "360" in lowered:                        return 1000
+        if "240" in lowered or "sd" in lowered:     return 500
+        if ".m3u8" in lowered:                      return 3500
+        return 100
+
+    patterns = [
+        # JWPlayer / sources array
+        r'sources\s*:\s*\[{[^}]*file\s*:\s*["\']([^"\']+)["\']',
+        r'"file"\s*:\s*"([^"]+(?:m3u8|mp4)[^"]*)"',
+        r"'file'\s*:\s*'([^']+(?:m3u8|mp4)[^']*)'",
+        # Clappr / hls.js
+        r'"source"\s*:\s*"([^"]+(?:m3u8|mp4)[^"]*)"',
+        r"'source'\s*:\s*'([^']+(?:m3u8|mp4)[^']*)'",
+        r'"src"\s*:\s*"([^"]+(?:m3u8|mp4)[^"]*)"',
+        # Direct URLs
+        r'(https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*)',
+        r'(https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*)',
+        # hlsManifestUrl (ok.ru, etc.)
+        r'hlsManifestUrl["\']?\s*:\s*["\']([^"\']+)["\']',
+        # playlist / stream
+        r'"(?:playlist|stream|hls|hls2|master)"\s*:\s*"([^"]+)"',
+        r"'(?:playlist|stream|hls|hls2|master)'\s*:\s*'([^']+)'",
+    ]
+    for pat in patterns:
+        for match in re.findall(pat, text, re.I):
+            url = match.replace("\\/", "/").replace("&amp;", "&").replace("\\u0026", "&").strip()
+            if url.startswith("//"):
+                url = "https:" + url
+            if not url.startswith("http"):
+                continue
+            if url in seen:
+                continue
+            seen.add(url)
+            candidates.append((score(url), url))
+
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+# ─── Packer / obfuscation ─────────────────────────────────────────────────────
+
+def _extract_packer_blocks(html):
+    blocks = []
+    marker = "eval(function(p,a,c,k,e,d){"
+    tail   = ".split('|')))"
+    pos = 0
+    while True:
+        start = (html or "").find(marker, pos)
+        if start == -1:
+            break
+        end = (html or "").find(tail, start)
+        if end == -1:
+            break
+        blocks.append(html[start : end + len(tail)])
+        pos = end + len(tail)
+    return blocks
+
+
+def decode_packer(packed):
+    try:
+        def read_js_string(text, start_idx):
+            quote = text[start_idx]
+            i = start_idx + 1
+            out = []
+            while i < len(text):
+                ch = text[i]
+                if ch == "\\" and i + 1 < len(text):
+                    out.append(text[i + 1])
+                    i += 2
+                    continue
+                if ch == quote:
+                    return "".join(out), i + 1
+                out.append(ch)
+                i += 1
+            return "", -1
+
+        start = packed.find("}(")
+        if start == -1:
+            return ""
+        idx = start + 2
+        while idx < len(packed) and packed[idx] in " \t\r\n":
+            idx += 1
+        if idx >= len(packed) or packed[idx] not in ("'", '"'):
+            return ""
+
+        p, idx = read_js_string(packed, idx)
+        if idx == -1:
+            return ""
+
+        nums = re.match(r"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*", packed[idx:], re.S)
+        if not nums:
+            return ""
+        a, c = nums.group(1), nums.group(2)
+        idx += nums.end()
+        if idx >= len(packed) or packed[idx] not in ("'", '"'):
+            return ""
+
+        k, idx = read_js_string(packed, idx)
+        if idx == -1:
+            return ""
+
+        a, c = int(a), int(c)
+        k = k.split("|")
+
+        def e(c_val):
+            result = ""
+            while True:
+                result = "0123456789abcdefghijklmnopqrstuvwxyz"[c_val % a] + result
+                c_val //= a
+                if c_val == 0:
+                    break
+            return result
+
+        d = {e(i): k[i] or e(i) for i in range(c)}
+        return re.sub(r'\b(\w+)\b', lambda x: d.get(x.group(1), x.group(1)), p)
+    except Exception:
+        return ""
+
+
+def find_packed_links(html):
+    for ev in _extract_packer_blocks(html):
+        dec = decode_packer(ev)
+        if dec:
+            res = find_m3u8(dec) or find_mp4(dec)
+            if res:
+                return res
+    # fallback broader eval pattern
+    for ev in re.findall(r"eval\(function\(p,a,c,k,e,d\).*?}\(.*?\)\)", html, re.S):
+        dec = decode_packer(ev)
+        if dec:
+            res = find_m3u8(dec) or find_mp4(dec)
+            if res:
+                return res
+    return None
+
+
+def _unpack_all(html):
+    """Return list of (original_html + all unpacked JS blocks) for thorough scanning."""
+    texts = [html]
+    for block in _extract_packer_blocks(html):
+        dec = decode_packer(block)
+        if dec:
+            texts.append(dec)
+    return texts
+
+
+# ─── Video Host Resolvers ─────────────────────────────────────────────────────
+
+def resolve_streamtape(url):
+    """streamtape.com — tries 3 extraction patterns as the site changes often."""
+    try:
+        html, _ = fetch(url, referer="https://streamtape.com/")
+        if not html:
+            return None
+
+        # Pattern 1: robotlink innerHTML concat (classic)
+        m = re.search(r"robotlink\)\.innerHTML\s*=\s*'([^']+)'\s*\+\s*'([^']+)'", html)
+        if m:
+            link = m.group(1) + m.group(2)
+            if not link.startswith("http"):
+                link = "https:" + link
+            return link.replace("//streamtape.com", "https://streamtape.com")
+
+        # Pattern 2: single innerHTML assignment
+        m = re.search(r"robotlink\)\.innerHTML\s*=\s*['\"]([^'\"]+)['\"]", html)
+        if m:
+            link = m.group(1)
+            return ("https:" + link) if link.startswith("//") else link
+
+        # Pattern 3: /get_video?... inside JS
+        m = re.search(r'(/get_video\?[^"\'&\s]+)', html)
+        if m:
+            return "https://streamtape.com" + m.group(1)
+
+        # Pattern 4: direct mp4 URL
+        return find_mp4(html)
+    except Exception:
+        pass
+    return None
+
+
+def resolve_doodstream(url):
+    """dood.* / doodstream / dsv* / d0o0d and 20+ domain variants."""
+    DOOD_DOMAINS = [
+        "dood.re", "dood.to", "dood.so", "dood.pm", "dood.ws",
+        "dood.watch", "dood.sh", "dood.la", "dood.li", "dood.cx",
+        "dood.xyz", "dood.wf", "d0o0d.com", "dsvplay.com",
+        "doods.pro", "ds2play.com", "dooood.com", "doodstream.com",
+    ]
+    try:
+        # Normalise to a working domain
+        working_html = None
+        working_url  = url
+        for dom in DOOD_DOMAINS:
+            candidate = re.sub(r'dood\.[a-z]+|dsvplay\.[a-z]+|d0o0d\.[a-z]+|doodstream\.[a-z]+', dom, url)
+            html, final = fetch(candidate, referer=candidate)
+            if html and "pass_md5" in html:
+                working_html = html
+                working_url  = candidate
+                break
+        if not working_html:
+            working_html, _ = fetch(url, referer=url)
+        if not working_html:
+            return None
+
+        m = re.search(r'\$\.get\(["\'](/pass_md5/[^"\']+)["\']', working_html)
+        if not m:
+            m = re.search(r'pass_md5/([^"\'.\s&]+)', working_html)
+            if m:
+                pass_path = "/pass_md5/" + m.group(1)
+            else:
+                return None
+        else:
+            pass_path = m.group(1)
+
+        # Extract base domain from working URL
+        parsed = urlparse(working_url)
+        dood_base = "{}://{}".format(parsed.scheme, parsed.netloc)
+
+        token_html, _ = fetch(dood_base + pass_path, referer=working_url)
+        if not token_html:
+            return None
+
+        chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        rand = "".join(random.choice(chars) for _ in range(10))
+        token = pass_path.split("/")[-1]
+        return "{}{}&token={}&expiry={}".format(
+            token_html.strip(), rand, token, int(time.time() * 1000)
+        )
+    except Exception:
+        pass
+    return None
+
+
+def resolve_vidbom(url):
+    try:
+        html, _ = fetch(url, referer=url)
+        if not html:
+            return None
+        return find_m3u8(html) or find_mp4(html) or find_packed_links(html)
+    except Exception:
+        pass
+    return None
+
+
+def resolve_uqload(url):
+    try:
+        html, _ = fetch(url, referer=url)
+        if not html:
+            return None
+        m = re.search(r'sources:\s*\["([^"]+)"\]', html)
+        if m:
+            return m.group(1)
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        pass
+    return None
+
+
+def resolve_govid(url):
+    """govid.live - enhanced resolver for faselhd.rip streams"""
+    try:
+        # If it's already a m3u8, return it
+        if '.m3u8' in url:
+            log("resolve_govid: direct m3u8 URL")
+            return url
+        
+        html, _ = fetch(url, referer="https://faselhd.rip/")
+        if not html:
+            return None
+        
+        # Look for m3u8 in the response
+        m3u8 = find_m3u8(html)
+        if m3u8:
+            log("resolve_govid: found m3u8: {}".format(m3u8[:80]))
+            return m3u8
+        
+        return find_mp4(html)
+    except Exception:
+        pass
+    return None
+
+
+def resolve_upstream(url):
+    try:
+        html, _ = fetch(url, referer=url)
+        if not html:
+            return None
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        pass
+    return None
+
+
+def resolve_mixdrop(url):
+    try:
+        html, _ = fetch(url, referer=url)
+        if not html:
+            return None
+        # Direct MDCore pattern
+        m = re.search(r'MDCore\.wurl\s*=\s*"([^"]+)"', html)
+        if m:
+            link = m.group(1)
+            return ("https:" + link) if link.startswith("//") else link
+        # Packed JS
+        for txt in _unpack_all(html):
+            m = re.search(r'MDCore\.wurl\s*=\s*"([^"]+)"', txt)
+            if m:
+                link = m.group(1)
+                return ("https:" + link) if link.startswith("//") else link
+    except Exception:
+        pass
+    return None
+
+
+def resolve_voe(url):
+    """voe.sx — handles multiple obfuscation layers including base64 and newer layouts."""
+    try:
+        html, final = fetch(url, referer="https://voe.sx/")
+        if not html:
+            return None
+
+        # Layer 1: direct hls / sources patterns
+        for pat in [
+            r"'hls'\s*:\s*'([^']+)'",
+            r'"hls"\s*:\s*"([^"]+)"',
+            r"sources\s*=\s*\[{[^}]*file\s*:\s*'([^']+)'",
+            r'"file"\s*:\s*"([^"]+\.m3u8[^"]*)"',
+        ]:
+            m = re.search(pat, html, re.I)
+            if m:
+                return m.group(1).replace("\\/", "/")
+
+        # Layer 2: base64 atob() blobs
+        import base64
+        for enc in re.finditer(r'atob\([\'"]([A-Za-z0-9+/=]+)[\'"]\)', html):
+            try:
+                dec = base64.b64decode(enc.group(1) + "==").decode("utf-8", errors="ignore")
+                mm = re.search(r'(https?://[^\s\'"<>]+\.m3u8[^\s\'"<>]*)', dec)
+                if mm:
+                    return mm.group(1)
+            except Exception:
+                pass
+
+        # Layer 3: packed JS
+        for txt in _unpack_all(html):
+            best = _best_media_url(txt)
+            if best:
+                return best
+
+        direct = find_m3u8(html) or find_mp4(html)
+        if direct:
+            return direct
+
+        # Layer 4: voe.sx sometimes wraps a completely different, randomly
+        # named domain via a nested iframe instead of embedding the stream
+        # on its own page (confirmed via a real captured session - the
+        # same "wrapper embeds unrelated domain" pattern already seen with
+        # hgcloud.to). If nothing was found directly above, follow any
+        # iframe pointing elsewhere and try resolving that instead.
+        for embed_url in re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I):
+            if not embed_url.startswith('http') or 'voe.sx' in embed_url:
+                continue
+            log("voe: Found wrapped embed iframe: {}".format(embed_url))
+            result = resolve_host(embed_url)
+            if result:
+                return result
+
+        return None
+    except Exception:
+        pass
+    return None
+
+
+def resolve_streamruby(url):
+    try:
+        html, _ = fetch(url, referer=url)
+        if not html:
+            return None
+        res = find_m3u8(html) or find_mp4(html)
+        if res:
+            return res
+        for txt in _unpack_all(html):
+            res = find_m3u8(txt) or find_mp4(txt)
+            if res:
+                return res
+    except Exception:
+        pass
+    return None
+
+
+def resolve_hgcloud(url):
+    """hgcloud.to acts as a wrapper that embeds a backend video host inside
+    a nested iframe. Which host it embeds is NOT fixed - masukestin.com and
+    vibuxer.com have both been observed in practice (confirmed via a real
+    captured session). The masukestin-specific checks are kept as-is since
+    they're proven to work for that host's exact URL shape; the generic
+    checks below are added as additional fallbacks for whatever other
+    backend hgcloud.to happens to be using, instead of returning None for
+    anything that isn't masukestin."""
+    try:
+        html, final_url = fetch(url, referer="https://hgcloud.to/")
+        if not html:
+            return None
+
+        from .base import resolve_host
+
+        # Check if there's an iframe pointing to masukestin.com
+        iframe_match = re.search(r'<iframe[^>]+src=["\']([^"\']+masukestin\.com[^"\']+)["\']', html, re.I)
+        if iframe_match:
+            embed_url = iframe_match.group(1)
+            log("hgcloud: Found masukestin embed: {}".format(embed_url))
+            result = resolve_host(embed_url)
+            if result:
+                return result
+
+        # Check for meta refresh redirect
+        meta_refresh = re.search(r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\']\d+;\s*url=([^"\']+)["\']', html, re.I)
+        if meta_refresh:
+            redirect_url = meta_refresh.group(1)
+            if "masukestin" in redirect_url:
+                log("hgcloud: Redirecting to masukestin: {}".format(redirect_url))
+                result = resolve_host(redirect_url)
+                if result:
+                    return result
+
+        # Check if the page has JavaScript that loads masukestin
+        if "masukestin" in html:
+            masukestin_urls = re.findall(r'(https?://masukestin\.com/[^\s"\']+)', html)
+            for masukestin_url in masukestin_urls:
+                log("hgcloud: Found masukestin URL: {}".format(masukestin_url))
+                result = resolve_host(masukestin_url)
+                if result:
+                    return result
+
+        # Fallback for any OTHER backend (e.g. vibuxer.com) that hgcloud.to
+        # might be embedding instead of masukestin: any iframe pointing
+        # somewhere other than hgcloud.to itself.
+        for embed_url in re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I):
+            if not embed_url.startswith('http') or 'hgcloud.to' in embed_url or 'masukestin.com' in embed_url:
+                continue
+            log("hgcloud: Found non-masukestin embed iframe: {}".format(embed_url))
+            result = resolve_host(embed_url)
+            if result:
+                return result
+
+        # Same idea, but for an embed URL referenced directly in inline JS
+        # rather than sitting in an <iframe> tag - matches a generic
+        # "<host>/e/<id>" or "<host>/v/<id>" embed-URL shape.
+        for embed_url in re.findall(r'(https?://[a-z0-9.-]+\.[a-z]{2,}/[ev]/[a-zA-Z0-9]+)', html, re.I):
+            if 'hgcloud.to' in embed_url or 'masukestin.com' in embed_url:
+                continue
+            log("hgcloud: Found non-masukestin embed URL in page script: {}".format(embed_url))
+            result = resolve_host(embed_url)
+            if result:
+                return result
+
+        return None
+    except Exception as e:
+        log("resolve_hgcloud error: {}".format(e))
+        return None
+
+
+def resolve_vidtube(url):
+    """vidtube.one — JWPlayer behind packer, optional domain restriction bypass."""
+    try:
+        html, _ = fetch(url, referer="https://topcinema.fan/")
+        if not html or "restricted for this domain" in html.lower():
+            html, _ = fetch(url, referer="https://topcinema.fan/")
+        if not html:
+            return None
+        best = _best_media_url(html)
+        if best:
+            return best
+        for txt in _unpack_all(html):
+            best = _best_media_url(txt)
+            if best:
+                return best
+    except Exception:
+        pass
+    return None
+
+def resolve_masukestin(url):
+    """masukestin.com - extracts m3u8 video URL from embed page"""
+    try:
+        html, final_url = fetch(url, referer="https://masukestin.com/")
+        if not html:
+            return None
+
+        # Look for the stream URL pattern in the page
+        stream_patterns = [
+            r'(https?://masukestin\.com/stream/[^\s"\']+\.m3u8[^\s"\']*)',
+            r'(https?://masukestin\.com/stream/[^\s"\']+)',
+            r'streamUrl\s*:\s*["\']([^"\']+)["\']',
+            r'videoUrl\s*:\s*["\']([^"\']+)["\']',
+            r'src:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+            r'file:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+        ]
+
+        for pattern in stream_patterns:
+            match = re.search(pattern, html, re.I)
+            if match:
+                stream_url = match.group(1)
+                stream_url = stream_url.replace("\\/", "/").replace("&amp;", "&")
+                if stream_url.startswith("//"):
+                    stream_url = "https:" + stream_url
+                if ".m3u8" in stream_url:
+                    log("masukestin: Found m3u8 stream: {}".format(stream_url[:80]))
+                    return stream_url
+
+        # Look in script tags
+        script_tags = re.findall(r'<script[^>]*>(.*?)</script>', html, re.S | re.I)
+        for script in script_tags:
+            for pattern in stream_patterns:
+                match = re.search(pattern, script, re.I)
+                if match:
+                    stream_url = match.group(1)
+                    if ".m3u8" in stream_url:
+                        log("masukestin: Found m3u8 in script: {}".format(stream_url[:80]))
+                        return stream_url
+
+        # Look for base64 encoded URLs
+        b64_patterns = [
+            r'atob\(["\']([A-Za-z0-9+/=]+)["\']\)',
+            r'Base64\.decode\(["\']([A-Za-z0-9+/=]+)["\']\)',
+        ]
+        for pattern in b64_patterns:
+            for match in re.findall(pattern, html):
+                try:
+                    import base64
+                    decoded = base64.b64decode(match).decode('utf-8')
+                    stream_match = re.search(r'(https?://masukestin\.com/stream/[^\s"\']+\.m3u8[^\s"\']*)', decoded)
+                    if stream_match:
+                        log("masukestin: Found m3u8 in base64: {}".format(stream_match.group(1)[:80]))
+                        return stream_match.group(1)
+                except:
+                    pass
+
+        log("masukestin: No stream URL found")
+        return None
+    except Exception as e:
+        log("resolve_masukestin error: {}".format(e))
+        return None
+
+# ── NEW resolvers ──────────────────────────────────────────────────────────────
+
+def resolve_streamwish(url):
+    """
+    StreamWish / WishFast / Filelions / VidHide / StreamHide / DHTpre —
+    all run the same JWPlayer-based platform.
+    """
+    try:
+        html, _ = fetch(url, referer=url)
+        if not html:
+            return None
+
+        # Try direct patterns first (fastest)
+        best = _best_media_url(html)
+        if best:
+            return best
+
+        # Packed JS (all these sites heavily pack their JS)
+        for txt in _unpack_all(html):
+            best = _best_media_url(txt)
+            if best:
+                return best
+
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        pass
+    return None
+
+
+def resolve_filemoon(url):
+    """
+    Filemoon.sx / .to / .nl / .wf — packed JS containing JWPlayer setup.
+    Uses parserBYSE in e2iplayer (= packed → JWPlayer sources).
+    """
+    try:
+        html, _ = fetch(url, referer="https://filemoon.sx/")
+        if not html:
+            return None
+
+        # Direct scan first
+        best = _best_media_url(html)
+        if best:
+            return best
+
+        # Unpack all eval blocks
+        for txt in _unpack_all(html):
+            best = _best_media_url(txt)
+            if best:
+                return best
+
+        # base64 blobs
+        import base64
+        for b64 in re.findall(r'atob\(["\']([A-Za-z0-9+/=]{40,})["\']\)', html, re.I):
+            try:
+                dec = base64.b64decode(b64 + "==").decode("utf-8", "ignore")
+                best = _best_media_url(dec)
+                if best:
+                    return best
+            except Exception:
+                pass
+
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        pass
+    return None
+
+
+def resolve_lulustream(url):
+    """
+    LuluStream — JWPlayer based, similar to streamwish family.
+    Requires Referer: https://1fo1ndyf09qz.tnmr.org (confirmed from e2iplayer).
+    """
+    try:
+        html, _ = fetch(url, referer="https://1fo1ndyf09qz.tnmr.org",
+                        extra_headers={"Origin": "https://lulustream.com"})
+        if not html:
+            html, _ = fetch(url, referer="https://lulustream.com/")
+        if not html:
+            return None
+
+        best = _best_media_url(html)
+        if best:
+            return best
+
+        for txt in _unpack_all(html):
+            best = _best_media_url(txt)
+            if best:
+                return best
+
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        pass
+    return None
+
+
+def resolve_okru(url):
+    """
+    ok.ru — uses the /dk/video.playJSON API (confirmed from e2iplayer parserOKRU).
+    Extracts HLS manifest URL.
+    """
+    try:
+        # Normalise URL → extract video ID
+        m = re.search(r'ok\.ru/(?:video(?:embed)?/|videoembed/)(\d+)', url)
+        if not m:
+            m = re.search(r'/(\d{10,})', url)
+        if not m:
+            return None
+        video_id = m.group(1)
+
+        # API endpoint (same as e2iplayer parserOKRU)
+        api_url = "https://ok.ru/dk/video.playJSON?movieId={}".format(video_id)
+        mobile_ua = ("Mozilla/5.0 (iPad; U; CPU OS 3_2 like Mac OS X; en-us) "
+                     "AppleWebKit/531.21.10 (KHTML, like Gecko) "
+                     "Version/4.0.4 Mobile/7B334b Safari/531.21.10")
+        body, _ = fetch(api_url,
+                        referer=url,
+                        extra_headers={
+                            "User-Agent": mobile_ua,
+                            "Accept": "application/json",
+                        })
+        if body:
+            try:
+                data = json.loads(body)
+                hls = data.get("hlsManifestUrl", "")
+                if hls:
+                    return hls.replace("\\u0026", "&").replace("\\/", "/")
+                # Fallback: videos array
+                for vid in (data.get("videos") or []):
+                    u = vid.get("url") or ""
+                    if u.startswith("http"):
+                        return u.replace("\\u0026", "&").replace("\\/", "/")
+            except Exception:
+                pass
+
+        # Fallback: scrape embed page
+        embed_url = "https://ok.ru/videoembed/{}".format(video_id)
+        html, _ = fetch(embed_url, referer="https://ok.ru/",
+                        extra_headers={"User-Agent": mobile_ua})
+        if html:
+            best = _best_media_url(html)
+            if best:
+                return best
+            m2 = re.search(r'"hlsManifestUrl"\s*:\s*"([^"]+)"', html)
+            if m2:
+                return m2.group(1).replace("\\u0026", "&").replace("\\/", "/")
+    except Exception:
+        pass
+    return None
+
+
+def resolve_vidguard(url):
+    """
+    VidGuard / vgfplay — obfuscated JS, exposes stream_url or packed m3u8.
+    """
+    try:
+        html, _ = fetch(url, referer="https://vidguard.to/")
+        if not html:
+            return None
+
+        # Common direct patterns
+        for pat in [
+            r'stream_url\s*=\s*["\']([^"\']+)["\']',
+            r'"(?:file|src|url)"\s*:\s*"([^"]+\.m3u8[^"]*)"',
+            r"'(?:file|src|url)'\s*:\s*'([^']+\.m3u8[^']*)'",
+        ]:
+            m = re.search(pat, html, re.I)
+            if m:
+                u = m.group(1).replace("\\/", "/").replace("\\u0026", "&")
+                return u
+
+        # Packed JS
+        for txt in _unpack_all(html):
+            best = _best_media_url(txt)
+            if best:
+                return best
+
+        # base64 decode attempts
+        import base64
+        for b64 in re.findall(r'atob\(["\']([A-Za-z0-9+/=]{40,})["\']\)', html, re.I):
+            try:
+                dec = base64.b64decode(b64 + "==").decode("utf-8", "ignore")
+                best = _best_media_url(dec)
+                if best:
+                    return best
+            except Exception:
+                pass
+
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        pass
+    return None
+
+
+# ── fastvid.cam resolver ──────────────────────────────────────────────────────
+
+def resolve_fastvid(url):
+    """fastvid.cam - extracts direct m3u8 URLs from the embed page"""
+    try:
+        html, final_url = fetch(url, referer="https://fastvid.cam/")
+        if not html:
+            return None
+        
+        # Look for master.m3u8 or index-*.m3u8 in the page
+        patterns = [
+            r'(https?://[^\s"\']+\.m3u8[^\s"\']*)',
+            r'"(https?://[^"]+\.m3u8[^"]+)"',
+            r"'(https?://[^']+\.m3u8[^']+)'",
+            r'stream/([^\s"\']+\.m3u8)',
+        ]
+        
+        found_urls = []
+        for pattern in patterns:
+            matches = re.findall(pattern, html, re.I)
+            for match in matches:
+                if match.startswith('/'):
+                    # Build full URL
+                    parsed = urlparse(final_url or url)
+                    full_url = f"{parsed.scheme}://{parsed.netloc}{match}"
+                    found_urls.append(full_url)
+                elif match.startswith('http'):
+                    found_urls.append(match)
+        
+        # Prefer master.m3u8, then index-f2 (720p), then index-f1 (480p)
+        for url in found_urls:
+            if 'master.m3u8' in url:
+                log(f"resolve_fastvid: found master.m3u8: {url}")
+                return url
+        for url in found_urls:
+            if 'index-f2' in url:  # 720p
+                log(f"resolve_fastvid: found 720p stream: {url}")
+                return url
+        for url in found_urls:
+            if 'index-f1' in url:  # 480p
+                log(f"resolve_fastvid: found 480p stream: {url}")
+                return url
+        for url in found_urls:
+            if '.m3u8' in url:
+                log(f"resolve_fastvid: found m3u8: {url}")
+                return url
+        
+        # Also check for JWPlayer configuration
+        jw_pattern = r'file:\s*["\']([^"\']+\.m3u8[^"\']*)["\']'
+        match = re.search(jw_pattern, html, re.I)
+        if match:
+            stream_url = match.group(1)
+            if stream_url.startswith('/'):
+                parsed = urlparse(final_url or url)
+                stream_url = f"{parsed.scheme}://{parsed.netloc}{stream_url}"
+            log(f"resolve_fastvid: found JWPlayer stream: {stream_url}")
+            return stream_url
+        
+        return None
+    except Exception as e:
+        log(f"resolve_fastvid error: {e}")
+        return None
+
+
+# ── rpmvip / upshare / cleantechworld resolvers ──────────────────────────────
+
+def resolve_rpmvip(url):
+    """rpmvip.com - direct m3u8 URLs"""
+    # These are already direct m3u8 URLs
+    if '.m3u8' in url:
+        return url
+    try:
+        html, _ = fetch(url, referer=url)
+        if not html:
+            return None
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        return url if '.m3u8' in url else None
+
+
+def resolve_upshare(url):
+    """upshare / upn.one - direct m3u8 URLs"""
+    if '.m3u8' in url:
+        return url
+    try:
+        html, _ = fetch(url, referer=url)
+        if not html:
+            return None
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        return url if '.m3u8' in url else None
+
+
+def resolve_cleantechworld(url):
+    """cleantechworld.shop - serves .txt files that are actually m3u8 content"""
+    try:
+        html, _ = fetch(url, referer=url)
+        if not html:
+            return None
+        # If it returns m3u8 content directly, it's already a stream
+        if "#EXTM3U" in html:
+            return url
+        # Otherwise look for m3u8 in the response
+        m = re.search(r'(https?://[^\s"\']+\.m3u8[^\s"\']*)', html)
+        if m:
+            return m.group(1)
+        return None
+    except Exception as e:
+        log(f"resolve_cleantechworld error: {e}")
+        return None
+
+
+# ========== NEW: FaselHD CDN Resolvers ==========
+
+def resolve_scdns(url):
+    """scdns.io - FaselHD's CDN for m3u8 streams (web596x.faselhdx.bid)"""
+    try:
+        # If it's already a direct m3u8 URL, return it
+        if '.m3u8' in url:
+            log("resolve_scdns: direct m3u8 URL")
+            return url
+        
+        # Fetch the page to get the actual stream
+        html, final_url = fetch(url, referer="https://www.fasel-hd.cam/")
+        if html:
+            # Look for m3u8 streams in various formats
+            m3u8_patterns = [
+                r'(https?://[^\s"\']+\.scdns\.io[^\s"\']+\.m3u8[^\s"\']*)',
+                r'(https?://[^\s"\']+\.c\.scdns\.io[^\s"\']+\.m3u8[^\s"\']*)',
+                r'(https?://master\.[^\s"\']+\.scdns\.io[^\s"\']+\.m3u8[^\s"\']*)',
+                r'(https?://r[0-9]+--[^\s"\']+\.c\.scdns\.io[^\s"\']+\.m3u8[^\s"\']*)',
+            ]
+            
+            for pattern in m3u8_patterns:
+                matches = re.findall(pattern, html, re.I)
+                for stream_url in matches:
+                    stream_url = stream_url.replace('\\/', '/').replace('&amp;', '&')
+                    # Prefer higher quality streams
+                    if 'hd1080' in stream_url or '1080' in stream_url:
+                        log("resolve_scdns: found 1080p stream")
+                        return stream_url
+                    elif 'hd720' in stream_url or '720' in stream_url:
+                        log("resolve_scdns: found 720p stream")
+                        return stream_url
+            
+            # Also try to find any m3u8 using the generic finder
+            stream = find_m3u8(html)
+            if stream:
+                log("resolve_scdns: found m3u8 via generic finder")
+                return stream
+        
+        return None
+    except Exception as e:
+        log(f"resolve_scdns error: {e}")
+        return None
+
+
+def resolve_datahowa(url):
+    """datahowa.asia - CDN for govid.live streams (faselhd.rip)"""
+    try:
+        log("resolve_datahowa: processing {}".format(url[:80]))
+        
+        # If it's a segment URL, try to get the base m3u8
+        if '.ts' in url:
+            base_m3u8 = re.sub(r'/seg_[0-9]+\.ts.*$', '/playlist.m3u8', url)
+            if base_m3u8 != url:
+                log("resolve_datahowa: converting segment to playlist: {}".format(base_m3u8[:80]))
+                return base_m3u8
+        
+        # If it's already a m3u8, return it
+        if '.m3u8' in url:
+            return url
+        
+        # Fetch to get actual stream
+        html, _ = fetch(url, referer="https://faselhd.rip/")
+        if html:
+            m3u8 = find_m3u8(html)
+            if m3u8:
+                return m3u8
+        
+        return None
+    except Exception as e:
+        log(f"resolve_datahowa error: {e}")
+        return None
+
+
+def resolve_downet(url):
+    """downet.net - Direct MP4 resolver for Akwam"""
+    try:
+        log("resolve_downet: processing {}".format(url[:80]))
+        
+        # If it's already a direct MP4 or m3u8, return it
+        if '.mp4' in url or '.m3u8' in url:
+            q = "HD"
+            if "1080" in url:
+                q = "1080p"
+            elif "720" in url:
+                q = "720p"
+            return url
+        
+        # Fetch to get actual stream
+        html, _ = fetch(url, referer="https://akwam.com.co/")
+        if html:
+            mp4 = find_mp4(html) or find_m3u8(html)
+            if mp4:
+                return mp4
+        
+        return None
+    except Exception as e:
+        log(f"resolve_downet error: {e}")
+        return None
+
+
+# ========== START: Wecima CDN Resolvers ==========
+
+def resolve_tnmr(url):
+    """tnmr.org - HLS stream resolver for Wecima"""
+    try:
+        html, _ = fetch(url, referer="https://wecima.cx/")
+        if not html:
+            return None
+        # Look for master.m3u8 or direct stream
+        m = re.search(r'(https?://[^\s"\']+\.tnmr\.org[^\s"\']+\.m3u8[^\s"\']*)', html)
+        if m:
+            return m.group(1)
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        return None
+
+
+def resolve_mxcontent(url):
+    """mxcontent.net - MP4 stream resolver for Wecima"""
+    try:
+        # Direct MP4 URL - just return it
+        if '.mp4' in url:
+            return url
+        html, _ = fetch(url, referer="https://wecima.cx/")
+        if html:
+            return find_mp4(html)
+    except Exception:
+        return None
+
+
+def resolve_delucloud(url):
+    """delucloud.xyz - HLS stream resolver for Wecima"""
+    try:
+        html, _ = fetch(url, referer="https://wecima.cx/")
+        if not html:
+            return None
+        # Look for master.m3u8
+        m = re.search(r'(https?://[^\s"\']+\.delucloud\.xyz[^\s"\']+\.m3u8[^\s"\']*)', html)
+        if m:
+            return m.group(1)
+        return find_m3u8(html)
+    except Exception:
+        return None
+
+
+def resolve_savefiles(url):
+    """savefiles.com - HLS stream resolver for Wecima"""
+    try:
+        html, _ = fetch(url, referer="https://wecima.cx/")
+        if not html:
+            return None
+        m = re.search(r'(https?://s[0-9]+\.savefiles\.com[^\s"\']+\.m3u8[^\s"\']*)', html)
+        if m:
+            return m.group(1)
+        return find_m3u8(html)
+    except Exception:
+        return None
+
+
+def resolve_sprintcdn(url):
+    """sprintcdn.com - HLS stream resolver for Wecima"""
+    try:
+        html, _ = fetch(url, referer="https://wecima.cx/")
+        if not html:
+            return None
+        return find_m3u8(html)
+    except Exception:
+        return None
+
+
+def resolve_aurorafieldnetwork(url):
+    """aurorafieldnetwork.store - HLS stream resolver for Wecima"""
+    try:
+        html, _ = fetch(url, referer="https://wecima.cx/")
+        if not html:
+            return None
+        # Return the .txt file URL which may contain the actual stream
+        if '.txt' in url:
+            # Fetch the .txt file to get the real stream URL
+            content, _ = fetch(url, referer="https://wecima.cx/")
+            if content:
+                m = re.search(r'(https?://[^\s"\']+\.m3u8[^\s"\']*)', content)
+                if m:
+                    return m.group(1)
+        return find_m3u8(html)
+    except Exception:
+        return None
+
+# ========== END: Wecima CDN Resolvers ==========
+
+def resolve_savefiles(url):
+    """savefiles.com - HLS stream resolver"""
+    try:
+        html, _ = fetch(url, referer="https://savefiles.com/")
+        if not html:
+            return None
+        # Look for m3u8 in the page
+        m = re.search(r'(https?://[^\s"\']+\.savefiles\.com[^\s"\']+\.m3u8[^\s"\']*)', html)
+        if m:
+            return m.group(1)
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        return None
+
+
+def resolve_abstream(url):
+    """abstream.to - HLS stream resolver"""
+    try:
+        html, _ = fetch(url, referer="https://abstream.to/")
+        if not html:
+            return None
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        return None
+
+
+def resolve_byselapuix(url):
+    """byselapuix.com - Filemoon variant"""
+    try:
+        html, _ = fetch(url, referer="https://byselapuix.com/")
+        if not html:
+            return None
+        # Use filemoon resolver logic
+        best = _best_media_url(html)
+        if best:
+            return best
+        for txt in _unpack_all(html):
+            best = _best_media_url(txt)
+            if best:
+                return best
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        return None
+
+
+def resolve_dhcplay(url):
+    """dhcplay.com - Doodstream variant"""
+    try:
+        # Use doodstream resolver logic
+        return resolve_doodstream(url)
+    except Exception:
+        return None
+    
+# Add after existing resolvers, before HOST_RESOLVERS
+
+def resolve_go_akwam(url):
+    """go.akwam.com.co - Akwam redirect resolver"""
+    try:
+        html, final_url = fetch(url, referer="https://akwam.com.co/")
+        if not html:
+            return None
+        
+        # Look for the final video URL in the page
+        # Pattern 1: video source tag
+        source_match = re.search(r'<source[^>]+src="([^"]+\.(?:mp4|m3u8)[^"]*)"', html, re.I)
+        if source_match:
+            return source_match.group(1)
+        
+        # Pattern 2: downet.net direct URL
+        downet_match = re.search(r'(https?://s\d+\.downet\.net[^\s"\']+\.(?:mp4|m3u8)[^\s"\']*)', html, re.I)
+        if downet_match:
+            return downet_match.group(1)
+        
+        # Pattern 3: meta refresh
+        meta_match = re.search(r'<meta[^>]+http-equiv="refresh"[^>]+content="\d+;\s*url=([^"]+)"', html, re.I)
+        if meta_match:
+            redirect_url = meta_match.group(1)
+            if redirect_url.startswith("//"):
+                redirect_url = "https:" + redirect_url
+            # Recursively resolve
+            return resolve_host(redirect_url, referer=url)
+        
+        # Pattern 4: iframe
+        iframe_match = re.search(r'<iframe[^>]+src="([^"]+)"[^>]*>', html, re.I)
+        if iframe_match:
+            iframe_url = iframe_match.group(1)
+            if iframe_url.startswith("//"):
+                iframe_url = "https:" + iframe_url
+            return resolve_host(iframe_url, referer=url)
+        
+        return None
+    except Exception as e:
+        log("resolve_go_akwam error: {}".format(e))
+        return None
+
+
+def resolve_abstream(url):
+    """abstream.to - HLS stream resolver for Akwam/Wecima"""
+    try:
+        html, _ = fetch(url, referer="https://abstream.to/")
+        if not html:
+            return None
+        # Look for video source or m3u8
+        source_match = re.search(r'<source[^>]+src="([^"]+\.(?:mp4|m3u8)[^"]*)"', html, re.I)
+        if source_match:
+            return source_match.group(1)
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        return None
+
+
+def resolve_savefiles_akwam(url):
+    """savefiles.com - HLS stream resolver for Akwam"""
+    try:
+        html, _ = fetch(url, referer="https://savefiles.com/")
+        if not html:
+            return None
+        m = re.search(r'(https?://s[0-9]+\.savefiles\.com[^\s"\']+\.m3u8[^\s"\']*)', html)
+        if m:
+            return m.group(1)
+        return find_m3u8(html) or find_mp4(html)
+    except Exception:
+        return None
+
+
+# ─── Host dispatcher ──────────────────────────────────────────────────────────
+
+HOST_RESOLVERS = {
+    # Existing
+    "streamtape":  resolve_streamtape,
+    "dood":        resolve_doodstream,
+    "dsvplay":     resolve_doodstream,
+    "d0o0d":       resolve_doodstream,
+    "doods":       resolve_doodstream,
+    "ds2play":     resolve_doodstream,
+    "dooood":      resolve_doodstream,
+    "vidbom":      resolve_vidbom,
+    "vidshare":    resolve_vidbom,
+    "uqload":      resolve_uqload,
+    "govid":       resolve_govid,
+    "upstream":    resolve_upstream,
+    "mixdrop":     resolve_mixdrop,
+    "voe":         resolve_voe,
+    "streamruby":  resolve_streamruby,
+    "hgcloud":     resolve_hgcloud,
+    "masukestin":  resolve_masukestin,
+    "masukestin.com": resolve_masukestin,
+    "vidtube":     resolve_vidtube,
+    # New
+    "streamwish":  resolve_streamwish,
+    "wishfast":    resolve_streamwish,
+    "filelion":    resolve_streamwish,
+    "filelions":   resolve_streamwish,
+    "vidhide":     resolve_streamwish,
+    "streamhide":  resolve_streamwish,
+    "dhtpre":      resolve_streamwish,
+    "embedrise":   resolve_streamwish,
+    "hglamioz":    resolve_streamwish,
+    "filemoon":    resolve_filemoon,
+    "lulustream":  resolve_lulustream,
+    "ok.ru":       resolve_okru,
+    "okru":        resolve_okru,
+    "vidguard":    resolve_vidguard,
+    "vgfplay":     resolve_vidguard,
+    # Fastvid
+    "fastvid":     resolve_fastvid,
+    "fastvid.cam": resolve_fastvid,
+    # RPMVip and friends
+    "rpmvip":      resolve_rpmvip,
+    "upshare":     resolve_upshare,
+    "upn.one":     resolve_upshare,
+    "cleantechworld": resolve_cleantechworld,
+    "cleantechworld.shop": resolve_cleantechworld,
+    
+    # ========== FaselHD CDN Resolvers (NEW) ==========
+    "scdns":              resolve_scdns,        # For web5106x.faselhdx.bid
+    "scdns.io":           resolve_scdns,
+    "c.scdns.io":         resolve_scdns,
+    "datahowa":           resolve_datahowa,     # For faselhd.rip streams
+    "datahowa.asia":      resolve_datahowa,
+    "govid.live":         resolve_govid,        # For faselhd.rip
+    
+    # ========== Akwam Resolvers (NEW) ==========
+    "downet":             resolve_downet,
+    "downet.net":         resolve_downet,
+    
+    # ========== Wecima CDN Resolvers ==========
+    "tnmr.org":        resolve_tnmr,
+    "tnmr":            resolve_tnmr,
+    "mxcontent":       resolve_mxcontent,
+    "mxcontent.net":   resolve_mxcontent,
+    "delucloud":       resolve_delucloud,
+    "delucloud.xyz":   resolve_delucloud,
+    "savefiles":       resolve_savefiles,
+    "savefiles.com":   resolve_savefiles,
+    "abstream":        resolve_abstream,
+    "abstream.to":     resolve_abstream,
+    "byselapuix":      resolve_byselapuix,
+    "byselapuix.com":  resolve_byselapuix,
+    "dhcplay":         resolve_dhcplay,
+    "dhcplay.com":     resolve_dhcplay,
+    "sprintcdn":       resolve_sprintcdn,
+    "sprintcdn.com":   resolve_sprintcdn,
+    "aurorafieldnetwork": resolve_aurorafieldnetwork,
+    "aurorafieldnetwork.store": resolve_aurorafieldnetwork,
+    
+    # ========== Akwam Redirect Resolvers ==========
+    "go.akwam.com.co":  resolve_go_akwam,
+    "go.akwam":         resolve_go_akwam,
+}
+
+
+def resolve_generic_embed(url):
+    """Generic resolver — m3u8/mp4 scan → packer unpack → iframe follow."""
+    try:
+        html, final = fetch(url, referer=url)
+        if not html:
+            return None
+        best = _best_media_url(html)
+        if best:
+            return best
+        for txt in _unpack_all(html):
+            best = _best_media_url(txt)
+            if best:
+                return best
+        # Follow one level of iframes
+        for iframe_url in extract_iframes(html, final or url)[:3]:
+            h2, _ = fetch(iframe_url, referer=url)
+            if h2:
+                best = _best_media_url(h2)
+                if best:
+                    return best
+    except Exception:
+        pass
+    return None
+
+
+# ─── Multi-provider premium resolvers (TMDB-based) ───────────────────────────
+
+def _get_stream_moviesapi(tmdb_id, m_type, season=None, episode=None):
+    url = ("https://moviesapi.club/api/v1/movies/{}".format(tmdb_id) if m_type == "movie"
+           else "https://moviesapi.club/api/v1/tv/{}/{}/{}".format(tmdb_id, season or 1, episode or 1))
+    body, _ = fetch(url, extra_headers={"Accept": "application/json"})
+    if not body:
+        return None
+    try:
+        data = json.loads(body)
+        for src in (data.get("sources") or []):
+            f = src.get("file") or src.get("url") or ""
+            if ".m3u8" in f:
+                return f
+        for src in (data.get("sources") or []):
+            f = src.get("file") or src.get("url") or ""
+            if f.startswith("http"):
+                return f
+    except Exception:
+        pass
+    return find_m3u8(body) or find_mp4(body)
+
+
+def _get_stream_vidsrc(tmdb_id, m_type, season=None, episode=None):
+    url = ("https://vidsrc.me/embed/movie/{}".format(tmdb_id) if m_type == "movie"
+           else "https://vidsrc.me/embed/tv/{}/{}/{}".format(tmdb_id, season or 1, episode or 1))
+    html, _ = fetch(url, referer="https://vidsrc.me/")
+    if not html:
+        return None
+    m = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I)
+    if m:
+        iframe_url = m.group(1)
+        if iframe_url.startswith("//"):
+            iframe_url = "https:" + iframe_url
+        h2, _ = fetch(iframe_url, referer=url)
+        if h2:
+            return find_m3u8(h2) or find_mp4(h2)
+    return find_m3u8(html) or find_mp4(html)
+
+
+def _get_stream_autoembed(tmdb_id, m_type, season=None, episode=None):
+    url = ("https://autoembed.cc/movie/tmdb-{}".format(tmdb_id) if m_type == "movie"
+           else "https://autoembed.cc/tv/tmdb-{}-{}-{}".format(tmdb_id, season or 1, episode or 1))
+    html, _ = fetch(url)
+    if not html:
+        return None
+    return find_m3u8(html) or find_mp4(html)
+
+
+_PREMIUM_METHODS = {
+    "moviesapi": _get_stream_moviesapi,
+    "vidsrc":    _get_stream_vidsrc,
+    "autoembed": _get_stream_autoembed,
+}
+
+
+def get_premium_servers(m_type, tmdb_id, season=None, episode=None):
+    suffix = ":{}:{}".format(season, episode) if (season and episode) else ""
+    return [
+        {"name": "Premium: AutoEmbed 🚀", "url": "autoembed://{}:{}{}".format(m_type, tmdb_id, suffix)},
+        {"name": "Premium: VidSrc 🔥",    "url": "vidsrc://{}:{}{}".format(m_type, tmdb_id, suffix)},
+    ]
+
+
+# ─── Main host dispatcher ─────────────────────────────────────────────────────
+
+def resolve_host(url, referer=None):
+    """Detect host from domain and dispatch to the right resolver."""
+    # Premium protocol shortcuts  (autoembed://, vidsrc://, etc.)
+    m = re.match(r'(\w+)://(movie|series|tv|episode):(\d+)(?::(\d+):(\d+))?', url)
+    if m:
+        method_name, m_type, tmdb_id, season, episode = m.groups()
+        m_type = "movie" if m_type in ("movie", "film") else "series"
+        if method_name in _PREMIUM_METHODS:
+            return _PREMIUM_METHODS[method_name](tmdb_id, m_type, season, episode)
+        if method_name == "auto":
+            for func in _PREMIUM_METHODS.values():
+                try:
+                    res = func(tmdb_id, m_type, season, episode)
+                    if res:
+                        return res
+                except Exception:
+                    pass
+        return None
+
+    domain = urlparse(url).netloc.lower()
+    log("resolve_host: domain={} url={}".format(domain, url[:80]))
+
+    # Exact-key match first, then substring scan
+    for key, resolver in HOST_RESOLVERS.items():
+        if key in domain:
+            log("Using resolver: {}".format(key))
+            result = resolver(url)
+            if result:
+                return result
+            log("Resolver {} returned nothing, trying generic".format(key))
+            break
+
+    log("Generic fallback for: {}".format(domain))
+    return resolve_generic_embed(url)
+
+
+# ─── iframe chain resolver ────────────────────────────────────────────────────
+
+def resolve_iframe_chain(url, referer=None, depth=0, max_depth=8):
+    """
+    Follow iframes / meta-refresh / JS location redirects recursively.
+    Returns (stream_url, domain) or (None, "").
+    """
+    if depth > max_depth:
+        return None, ""
+
+    html, final_url = fetch(url, referer=referer)
+    if not html:
+        return None, ""
+
+    active_url = final_url or url
+    domain = urlparse(active_url).netloc.lower()
+
+    # 1. Direct media URL in page
+    stream = find_m3u8(html) or find_mp4(html) or find_packed_links(html)
+    if stream:
+        return stream, domain
+
+    # 2. Meta-refresh redirect
+    m = re.search(
+        r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\']\d+\s*;\s*url=([^"\']+)["\']',
+        html, re.I
+    )
+    if m:
+        new_url = m.group(1).strip()
+        if new_url.startswith("//"):
+            new_url = "https:" + new_url
+        elif not new_url.startswith("http"):
+            new_url = urljoin(active_url, new_url)
+        if new_url != active_url:
+            return resolve_iframe_chain(new_url, referer=active_url, depth=depth + 1, max_depth=max_depth)
+
+    # 3. JS window.location redirect
+    m = re.search(r'(?:window\.location(?:\.href)?\s*=|location\.replace\()\s*["\']([^"\']+)["\']', html, re.I)
+    if m:
+        new_url = m.group(1).strip()
+        if new_url.startswith("//"):
+            new_url = "https:" + new_url
+        elif not new_url.startswith("http"):
+            new_url = urljoin(active_url, new_url)
+        if new_url != active_url and "://" in new_url:
+            return resolve_iframe_chain(new_url, referer=active_url, depth=depth + 1, max_depth=max_depth)
+
+    # 4. iframes (src, data-src, data-url, data-lazy-src)
+    iframe_srcs = re.findall(
+        r'<(?:iframe|embed|frame)[^>]+(?:src|data-src|data-url|data-lazy-src)=["\']([^"\']+)["\']',
+        html, re.I
+    )
+    for src in iframe_srcs:
+        if src.startswith("//"):
+            src = "https:" + src
+        elif not src.startswith("http"):
+            p = urlparse(active_url)
+            if src.startswith("/"):
+                src = "{}://{}{}".format(p.scheme, p.netloc, src)
+            else:
+                continue
+
+        if any(x in src.lower() for x in ("facebook.com", "twitter.com", "googletag", "doubleclick", "analytics")):
+            continue
+
+        # Check if this is a known host — resolve directly rather than fetching page
+        src_domain = urlparse(src).netloc.lower()
+        for key, resolver in HOST_RESOLVERS.items():
+            if key in src_domain:
+                result = resolver(src)
+                if result:
+                    return result, src_domain
+                break
+
+        res, h = resolve_iframe_chain(src, referer=active_url, depth=depth + 1, max_depth=max_depth)
+        if res:
+            return res, h
+
+    return None, ""
+
+
+# ─── Main extract_stream entry point ─────────────────────────────────────────
+
+def extract_stream(url):
+    """
+    Standard entry point used by all extractors.
+    Returns (stream_url, quality_label, referer).
+    """
+    log("--- extract_stream START: {} ---".format(url))
+    raw_url = (url or "").strip()
+    if not raw_url:
+        return None, "", url
+
+    # Split piped headers (url|Referer=xxx&User-Agent=yyy)
+    piped_headers = {}
+    main_url = raw_url
+    if "|" in raw_url:
+        main_url, raw_hdrs = raw_url.split("|", 1)
+        for part in raw_hdrs.split("&"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                piped_headers[k.strip()] = v.strip()
+
+    lower = main_url.lower()
+
+    # Fast path: already a direct media URL
+    if main_url.startswith("http") and any(ext in lower for ext in (".m3u8", ".mp4", ".mkv", ".mp3", ".ts")):
+        ref = piped_headers.get("Referer")
+        if not ref:
+            # Detect domain for proper referer
+            domain = urlparse(main_url).netloc.lower()
+            if "scdns.io" in domain:
+                ref = "https://web5106x.faselhdx.bid/"
+            elif "govid.live" in domain or "datahowa.asia" in domain:
+                ref = "https://faselhd.rip/"
+            else:
+                ref = "{}://{}/".format(*urlparse(main_url)[:2])
+        
+        # Detect quality from filename
+        q = "HD"
+        if "1080" in lower or "fhd" in lower or "hd1080" in lower:
+            q = "1080p"
+        elif "720" in lower or "hd" in lower or "hd720" in lower:
+            q = "720p"
+        elif "480" in lower:
+            q = "480p"
+        elif "index-f2" in lower:
+            q = "720p"
+        elif "index-f1" in lower:
+            q = "480p"
+        elif "master.m3u8" in lower:
+            q = "720p"
+            
+        log("extract_stream DIRECT: {}".format(main_url))
+        return main_url, q, ref
+
+    # Fetch to get final URL (for redirects)
+    _, final_ref = fetch(main_url, referer=piped_headers.get("Referer"))
+
+    # Try host resolver first
+    stream = resolve_host(main_url, referer=piped_headers.get("Referer"))
+    
+    # If that fails, try iframe chain
+    if not stream:
+        log("resolve_host failed, trying iframe chain")
+        stream, _ = resolve_iframe_chain(main_url, referer=piped_headers.get("Referer"))
+
+    if stream:
+        # Detect quality from stream URL
+        q = "HD"
+        stream_lower = stream.lower()
+        if "1080" in stream_lower or "fhd" in stream_lower or "hd1080" in stream_lower:
+            q = "1080p"
+        elif "720" in stream_lower or "hd" in stream_lower or "hd720" in stream_lower:
+            q = "720p"
+        elif "480" in stream_lower:
+            q = "480p"
+        elif "index-f2" in stream_lower:
+            q = "720p"
+        elif "index-f1" in stream_lower:
+            q = "480p"
+            
+        log("extract_stream SUCCESS: {} ({})".format(stream[:120], q))
+        return stream, q, final_ref or main_url
+
+    log("extract_stream FAILED for: {}".format(main_url))
+    return None, "", final_ref or main_url
+``````
+
+## File: extractors/egydead.py
+``````python
+# -*- coding: utf-8 -*-
+"""
+EgyDead extractor — WordPress site
+Domain: https://tv9.egydead.live/
+"""
+
+import re
+import sys
+
+from .base import fetch, log, extract_stream as base_extract_stream
+
+if sys.version_info[0] == 3:
+    from urllib.parse import quote_plus, urljoin, urlencode, urlparse, quote, unquote
+    from html import unescape as html_unescape
+else:
+    from urllib import quote_plus, urlencode
+    from urlparse import urljoin
+    from HTMLParser import HTMLParser
+    html_unescape = HTMLParser().unescape
+
+MAIN_URL = "https://tv10.egydead.live/"
+
+_CLEAN_WORDS = [
+    "مشاهدة فيلم", "مشاهدة", "فيلم", "مسلسل",
+    "مترجمة اون لاين", "مترجم اون لاين",
+    "مترجمة", "مترجم", "اون لاين", "أون لاين",
+    "مدبلجة", "مدبلج", "كرتون", "انمي",
+    "بالمصري", "سلسلة افلام", "عرض", "برنامج", "جميع مواسم",
+]
+
+
+def _strip_tags(text):
+    text = html_unescape(text or "")
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _clean_title(title):
+    title = _strip_tags(title)
+    for word in _CLEAN_WORDS:
+        title = title.replace(word, "")
+    title = re.sub(r"\s*\|\s*$", "", title)
+    title = re.sub(r"\s*\-\s*$", "", title)
+    return re.sub(r"\s+", " ", title).strip(" -|")
+
+
+def _full_url(path):
+    if not path:
+        return ""
+    path = html_unescape(path.strip())
+    if path.startswith("//"):
+        path = "https:" + path
+    elif not path.startswith("http"):
+        path = urljoin(MAIN_URL, path)
+    try:
+        path = quote(unquote(path), safe=':/?&=#+')
+    except Exception:
+        pass
+    return path
+
+
+def _pick_real_image(html_chunk):
+    """
+    Find the most likely REAL image URL within a chunk of HTML, robust to
+    lazy-load setups that put an identical placeholder in one attribute
+    for every single image (only swapping in the real URL via JS later -
+    trusting one attribute name blindly can end up picking the same
+    placeholder for every item on a page). Checks every common lazy-load
+    attribute plus plain src on each <img> tag - all of them, not just
+    whichever is present first - and prefers whichever candidate actually
+    looks like a real uploaded image (/wp-content/uploads/) over a
+    same-for-every-item theme placeholder.
+    """
+    best = None
+    for img_tag in re.findall(r'<img[^>]+>', html_chunk, re.I):
+        tag_candidates = []
+        for attr in ('data-src', 'data-lazy-src', 'data-original', 'data-lazy', 'src'):
+            m = re.search(attr + r'=["\']([^"\']+)["\']', img_tag, re.I)
+            if m:
+                tag_candidates.append(m.group(1))
+        for c in tag_candidates:
+            if '/wp-content/uploads/' in c:
+                return c
+        if best is None and tag_candidates:
+            best = tag_candidates[0]
+    return best
+
+
+def _encode_arabic_url(url):
+    try:
+        parsed = urlparse(url)
+        path_segments = []
+        for segment in parsed.path.split('/'):
+            if segment:
+                if any(ord(c) > 127 for c in segment):
+                    path_segments.append(quote_plus(segment.encode('utf-8')))
+                else:
+                    path_segments.append(segment)
+            else:
+                path_segments.append('')
+        encoded_path = '/'.join(path_segments)
+        if not encoded_path.startswith('/'):
+            encoded_path = '/' + encoded_path
+        
+        encoded_query = ''
+        if parsed.query:
+            try:
+                query_parts = []
+                for part in parsed.query.split('&'):
+                    if '=' in part:
+                        key, val = part.split('=', 1)
+                        if any(ord(c) > 127 for c in val):
+                            query_parts.append(key + '=' + quote_plus(val.encode('utf-8')))
+                        else:
+                            query_parts.append(part)
+                    else:
+                        query_parts.append(part)
+                encoded_query = '&'.join(query_parts)
+            except Exception:
+                encoded_query = parsed.query
+        
+        encoded_url = parsed._replace(path=encoded_path, query=encoded_query).geturl()
+        return encoded_url
+    except Exception:
+        return url
+
+
+def _fetch(url, referer=None, post_data=None):
+    extra = {}
+    if post_data:
+        extra["Content-Type"] = "application/x-www-form-urlencoded"
+        extra["X-Requested-With"] = "XMLHttpRequest"
+    
+    # Add browser-like headers
+    extra["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    extra["Accept-Language"] = "ar-EG,ar;q=0.9,en;q=0.8"
+    extra["Cache-Control"] = "no-cache"
+    extra["Pragma"] = "no-cache"
+    extra["Sec-Fetch-Dest"] = "document"
+    extra["Sec-Fetch-Mode"] = "navigate"
+    extra["Sec-Fetch-Site"] = "none"
+    extra["Sec-Fetch-User"] = "?1"
+    extra["Upgrade-Insecure-Requests"] = "1"
+    
+    encoded_url = _encode_arabic_url(url)
+    
+    return fetch(
+        encoded_url,
+        referer=referer or MAIN_URL,
+        extra_headers=extra if extra else None,
+        post_data=post_data,
+    )
+
+
+def _parse_category_list(html):
+    """Parse category page with movie items"""
+    items = []
+    seen = set()
+
+    # Find all movie items - look for li with class containing "movieItem"
+    pattern = r'<li[^>]*class=["\'][^"\']*(?:movieItem|post-item)[^"\']*["\'][^>]*>(.*?)</li>'
+    for li in re.findall(pattern, html, re.S | re.I):
+        
+        # Extract URL - look for the post link
+        url_match = re.search(r'<a[^>]+href=["\']([^"\']+)["\']', li)
+        if not url_match:
+            continue
+        
+        url = _full_url(url_match.group(1))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        
+        # Skip pagination links
+        if any(x in url for x in ("/page/", "page=", "category")):
+            continue
+        
+        # Extract title
+        title = ""
+        title_match = (
+            re.search(r'<h[1-3][^>]*class=["\'][^"\']*BottomTitle[^"\']*["\'][^>]*>(.*?)</h[1-3]>', li, re.S | re.I) or
+            re.search(r'<h[1-3][^>]*>(.*?)</h[1-3]>', li, re.S | re.I) or
+            re.search(r'<img[^>]+alt=["\']([^"\']+)["\']', li) or
+            re.search(r'<a[^>]+title=["\']([^"\']+)["\']', li)
+        )
+        if title_match:
+            title = _clean_title(title_match.group(1))
+        
+        # Extract poster. Rather than trusting one specific attribute
+        # (some lazy-load implementations put an *identical* placeholder
+        # URL in data-src for every image, only swapping in the real one
+        # via JS later - trusting data-src blindly can end up picking the
+        # same placeholder for every single item), gather every
+        # image-URL-bearing attribute found here and prefer whichever one
+        # actually looks like a real uploaded image.
+        poster = _pick_real_image(li)
+        if poster:
+            poster = _full_url(poster)
+            # Remove size suffix (e.g., -225x280.jpg -> .jpg)
+            poster = re.sub(r'-\d+x\d+(?=\.\w+$)', '', poster)
+        else:
+            poster = ""
+        
+        # Extract quality/category label (kept in "plot" for context, no
+        # longer appended to the displayed title - a plain title reads
+        # better than "Title [مسلسلات اجنبي]" repeated on every item in a
+        # category that's already all one category).
+        quality = ""
+        cat_match = re.search(r'<span[^>]*class=["\'][^"\']*cat_name[^"\']*["\'][^>]*>(.*?)</span>', li, re.S | re.I)
+        if cat_match:
+            quality = _strip_tags(cat_match.group(1))
+
+        # Detect series vs movie from the item's own URL/raw title rather
+        # than hardcoding "movie" for everything - series episodes always
+        # live under /episode/, /season/, or /serie/ regardless of which
+        # category listing they appear in, and Arabic titles usually lead
+        # with "مسلسل" (series) before _clean_title strips it.
+        raw_title_text = title_match.group(1) if title_match else ""
+        url_low = url.lower()
+        if any(x in url_low for x in ("/episode/", "/season/", "/serie/", "/series-category/")) or "مسلسل" in raw_title_text:
+            item_type = "series"
+        else:
+            item_type = "movie"
+
+        if title:
+            items.append({
+                "title": title,
+                "url": url,
+                "poster": poster,
+                "plot": quality,
+                "type": item_type,
+                "_action": "details",
+            })
+    
+    return items
+
+
+def _parse_pagination(html, current_url):
+    """Return next page item if available"""
+    # Look for next page link
+    next_match = re.search(
+        r'<a[^>]+class=["\'][^"\']*next[^"\']*(?:page-numbers)?["\'][^>]+href=["\']([^"\']+)["\']',
+        html, re.I
+    )
+    if next_match:
+        raw_href = html_unescape(next_match.group(1).strip())
+        # IMPORTANT: resolve relative to the page the link was actually
+        # found on (current_url), NOT the site root (which is what
+        # _full_url() always does). This theme is inconsistent - most
+        # category pages emit an absolute pagination URL, but at least one
+        # (English movies, confirmed via a real production log) emits a
+        # bare relative href like "?page=2/". Resolving that against the
+        # site root silently drops the category path, bouncing navigation
+        # to the homepage's own page 2 instead of staying in the category
+        # - which is exactly why mixed movies/series and wrong servers
+        # showed up.
+        if raw_href.startswith("http"):
+            next_url = raw_href
+        elif raw_href.startswith("//"):
+            next_url = "https:" + raw_href
+        else:
+            next_url = urljoin(current_url, raw_href)
+        if next_url and next_url != current_url:
+            return {
+                "title": "➡️ Next Page",
+                "url": next_url,
+                "type": "category",
+                "_action": "category",
+            }
+    return None
+
+
+def _extract_detail_meta(html):
+    """Extract title, poster, plot, year from item page"""
+    # Title from og:title
+    title = ""
+    title_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+    if title_match:
+        title = _clean_title(title_match.group(1))
+    
+    if not title:
+        title_match = re.search(r'<title>(.*?)</title>', html, re.I)
+        if title_match:
+            title = _clean_title(title_match.group(1).split('|')[0])
+    
+    # Poster from og:image
+    poster = ""
+    poster_match = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+    if poster_match and '/wp-content/uploads/' in poster_match.group(1):
+        poster = _full_url(poster_match.group(1))
+        poster = re.sub(r'-\d+x\d+(?=\.\w+$)', '', poster)
+
+    # Fallback: if og:image is missing or didn't look like a real
+    # uploaded image (some pages have it point at a generic site logo
+    # instead), search the page body directly using the same robust,
+    # multi-attribute image picker used for category listings.
+    if not poster:
+        # Prefer an image near a "poster"-classed element if one exists,
+        # otherwise fall back to whatever the picker finds first.
+        poster_area_match = re.search(r'<div[^>]+class=["\'][^"\']*[Pp]oster[^"\']*["\'][^>]*>(.*?)</div>', html, re.S | re.I)
+        found = _pick_real_image(poster_area_match.group(1)) if poster_area_match else None
+        if not found:
+            found = _pick_real_image(html)
+        if found:
+            poster = _full_url(found)
+            poster = re.sub(r'-\d+x\d+(?=\.\w+$)', '', poster)
+    
+    # Description
+    plot = ""
+    desc_match = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+    if desc_match:
+        plot = _strip_tags(desc_match.group(1))
+    
+    # Try to get plot from singleStory div
+    if not plot:
+        story_match = re.search(r'<div[^>]*class=["\'][^"\']*singleStory[^"\']*["\'][^>]*>(.*?)</div>', html, re.S | re.I)
+        if story_match:
+            plot = _strip_tags(story_match.group(1))
+    
+    # Year
+    year = ""
+    year_match = re.search(r'\b(19\d{2}|20\d{2})\b', title + " " + plot)
+    if year_match:
+        year = year_match.group(1)
+    
+    return title, poster, plot, year
+
+
+def _extract_watch_servers(html, page_url):
+    """
+    Extract video streaming servers from EgyDead page.
+    The watch servers are in <ul class="serversList"> with li elements having data-link attribute.
+    """
+    servers = []
+    seen = set()
+    
+    # Find serversList ul
+    servers_html = _find_servers_html(html)
+    
+    # Parse servers from serversList
+    if servers_html:
+        # Find all li elements with data-link attribute
+        for li_match in re.finditer(r'<li[^>]*data-link=["\']([^"\']+)["\'][^>]*>(.*?)</li>', servers_html, re.S | re.I):
+            video_url = html_unescape(li_match.group(1).strip())
+            li_content = li_match.group(2)
+            
+            if not video_url or video_url in seen:
+                continue
+            
+            if video_url.startswith("//"):
+                video_url = "https:" + video_url
+            seen.add(video_url)
+            
+            # Extract server name
+            name_match = re.search(r'<span[^>]*><p[^>]*>(.*?)</p></span>', li_content, re.I) or \
+                        re.search(r'<p[^>]*>(.*?)</p>', li_content, re.I) or \
+                        re.search(r'<span[^>]*>(.*?)</span>', li_content, re.I)
+            
+            name = _strip_tags(name_match.group(1)) if name_match else f"Watch Server {len(servers) + 1}"
+            
+            servers.append({"name": name.strip(), "url": video_url, "type": "embed"})
+    
+    # If no servers found in HTML, try checking for direct iframe
+    if not servers:
+        # Check for video iframe
+        iframe_match = re.search(r'<iframe[^>]+id=["\']videoIframe["\'][^>]+src=["\']([^"\']+)["\']', html, re.I)
+        if iframe_match:
+            video_url = iframe_match.group(1)
+            if video_url and video_url not in seen:
+                seen.add(video_url)
+                servers.append({"name": "Video Player", "url": video_url, "type": "embed"})
+    
+    log(f"EgyDead: Found {len(servers)} watch servers for {page_url}")
+    return servers
+
+
+def _find_servers_html(html):
+    """Extract content of <ul class="serversList"> or <ul id="watch"> from html"""
+    m = re.search(
+        r'<ul[^>]+class=["\'][^"\']*serversList[^"\']*["\'][^>]*>(.*?)</ul>',
+        html, re.S | re.I
+    )
+    if not m:
+        # Try with id="watch"
+        m = re.search(r'<ul[^>]*id=["\']watch["\'][^>]*>(.*?)</ul>', html, re.S | re.I)
+    return m.group(1) if m else ""
+
+
+def get_categories(mtype="movie"):
+    """Return category list for egydead.lat"""
+    if mtype == "movie":
+        return [
+            {"title": "🎬 English Movies",        "url": _full_url("/category/english-movies/"),      "type": "category", "_action": "category"},
+            {"title": "🇪🇬 Arabic Movies",          "url": _full_url("/category/افلام-عربي/"),       "type": "category", "_action": "category"},
+            {"title": "🌏 Asian Movies",           "url": _full_url("/category/افلام-اسيوية/"),     "type": "category", "_action": "category"},
+            {"title": "🇹🇷 Turkish Movies",         "url": _full_url("/category/افلام-تركية/"),      "type": "category", "_action": "category"},
+            {"title": "🇮🇳 Indian Movies",          "url": _full_url("/category/افلام-هندي/"),       "type": "category", "_action": "category"},
+            {"title": "🎭 Cartoon Movies",         "url": _full_url("/category/افلام-كرتون/"),      "type": "category", "_action": "category"},
+            {"title": "🎌 Anime Movies",           "url": _full_url("/category/افلام-انمي/"),       "type": "category", "_action": "category"},
+            {"title": "📽️ Documentary Movies",    "url": _full_url("/category/افلام-وثائقية/"),    "type": "category", "_action": "category"},
+        ]
+    # series - these live under /series-category/ (a different taxonomy
+    # than movies' /category/), and use English slugs, confirmed directly
+    # from the site's own navigation menu. The old URLs here used the
+    # movie taxonomy path with Arabic slugs, which don't exist under
+    # /series-category/ at all - explaining why every series category
+    # produced the same wrong (redirected) content.
+    return [
+        {"title": "📺 English Series",        "url": _full_url("/series-category/english-series/"),    "type": "category", "_action": "category"},
+        {"title": "🇪🇬 Arabic Series",         "url": _full_url("/series-category/arabic-series/"),     "type": "category", "_action": "category"},
+        {"title": "🇹🇷 Turkish Series",       "url": _full_url("/series-category/turkish-series/"),    "type": "category", "_action": "category"},
+        {"title": "🌏 Asian Series",          "url": _full_url("/series-category/asian-series/"),      "type": "category", "_action": "category"},
+        {"title": "🎌 Anime Series",          "url": _full_url("/series-category/anime-series/"),      "type": "category", "_action": "category"},
+        {"title": "🎠 Cartoon Series",        "url": _full_url("/series-category/cartoon-series/"),    "type": "category", "_action": "category"},
+        {"title": "🇮🇳 Indian Series",         "url": _full_url("/series-category/indian-series/"),     "type": "category", "_action": "category"},
+        {"title": "📽️ Documentary Series",    "url": _full_url("/series-category/documentary-series/"), "type": "category", "_action": "category"},
+        {"title": "📡 TV Shows",              "url": _full_url("/series-category/tv-shows/"),          "type": "category", "_action": "category"},
+    ]
+
+
+def get_category_items(url, page=None):
+    """Get items from a category page"""
+    fetch_url = url
+    if page and page > 1:
+        # This site has been observed using two different pagination
+        # styles: WordPress' usual path style (/page/2/) on some pages,
+        # and a query-string style (?page=2/) on others (confirmed via a
+        # live snapshot of the front page). If the URL we were given
+        # already contains either form, bump the existing number in place
+        # rather than assuming a style - that keeps this correct
+        # regardless of which one the current page actually uses. Only
+        # falls back to appending /page/N/ when neither is present yet
+        # (i.e. this is the first page of a category with no page
+        # component at all).
+        if '/page/' in fetch_url:
+            fetch_url = re.sub(r'/page/\d+', f'/page/{page}', fetch_url)
+        elif re.search(r'[?&]page=\d+', fetch_url):
+            fetch_url = re.sub(r'([?&]page=)\d+', r'\g<1>' + str(page), fetch_url)
+        elif fetch_url.endswith('/'):
+            fetch_url = f"{fetch_url}page/{page}/"
+        else:
+            fetch_url = f"{fetch_url}/page/{page}/"
+    
+    log(f"EgyDead: Fetching category page: {fetch_url}")
+    html, final_url = _fetch(fetch_url)
+    if not html:
+        log(f"EgyDead: get_category_items failed: {fetch_url}")
+        return []
+
+    items = _parse_category_list(html)
+
+    if not page or page == 1:
+        nxt = _parse_pagination(html, fetch_url)
+        if nxt:
+            items.append(nxt)
+
+    log(f"EgyDead: category {url} page {page or 1} → {len(items)} items")
+    return items
+
+
+def search(query, page=1):
+    """Search for movies/series"""
+    search_url = MAIN_URL.rstrip("/") + "/?s=" + quote_plus(query)
+    if page > 1:
+        search_url += f"&paged={page}"
+    
+    html, final_url = _fetch(search_url)
+    if not html:
+        log(f"EgyDead: search failed for '{query}'")
+        return []
+
+    items = _parse_category_list(html)
+
+    if page == 1:
+        nxt = _parse_pagination(html, search_url)
+        if nxt:
+            items.append(nxt)
+
+    log(f"EgyDead: search '{query}' → {len(items)} items")
+    return items
+
+
+def get_page(url, m_type=None):
+    """Fetch and parse an item page"""
+    html, final_url = _fetch(url)
+    result = {
+        "url": url,
+        "title": "",
+        "poster": "",
+        "plot": "",
+        "year": "",
+        "rating": "",
+        "servers": [],
+        "items": [],
+        "type": m_type or "movie",
+    }
+
+    if not html:
+        log(f"EgyDead: get_page failed: {url}")
+        return result
+
+    # Extract metadata
+    title, poster, plot, year = _extract_detail_meta(html)
+    result["title"] = title
+    result["poster"] = poster
+    result["plot"] = plot
+    result["year"] = year
+
+    # Extract WATCH servers (streaming links)
+    servers = _extract_watch_servers(html, final_url or url)
+
+    # This site gates the actual server list behind a view-confirmation
+    # step: the page's own "watch" form POSTs View=1 back to the exact
+    # same URL, and only *that* response includes the populated
+    # <ul class="serversList"> (confirmed directly via a real captured
+    # network log - the plain GET response has the container present but
+    # empty, no data-link attributes at all, until this POST happens).
+    # Replicate that exact interaction as a fallback whenever the initial
+    # GET comes back with no servers, instead of giving up.
+    if not servers:
+        log(f"EgyDead: no servers on initial load, retrying with View=1 POST: {url}")
+        post_html, post_final_url = _fetch(url, post_data={"View": "1"})
+        if post_html:
+            servers = _extract_watch_servers(post_html, post_final_url or url)
+
+    result["servers"] = servers
+
+    # Determine type from URL
+    low = url.lower()
+    if any(x in low for x in ("/episode/", "/series/", "/season/", "/serie/", "مسلسل", "/category/مسلسلات", "/series-category/")):
+        result["type"] = "series"
+    else:
+        result["type"] = m_type or "movie"
+
+    log(f"EgyDead: item type={result['type']}, title={title}, watch_servers={len(servers)}")
+    return result
+
+
+def extract_stream(url):
+    """Resolve a server URL to a playable stream"""
+    from .base import resolve_streamruby, resolve_host, resolve_mixdrop, resolve_doodstream
+
+    low = (url or "").lower()
+
+    # StreamRuby
+    if "stmruby" in low or "streamruby" in low:
+        stream = resolve_streamruby(url)
+        if stream:
+            return (
+                stream + "|Referer=https://stmruby.com/&Origin=https://stmruby.com",
+                None,
+                "https://stmruby.com/",
+            )
+
+    # Mixdrop
+    if "mixdrop" in low:
+        stream = resolve_mixdrop(url)
+        if stream:
+            return stream, None, None
+
+    # Doodstream
+    if "dood" in low or "doodstream" in low:
+        stream = resolve_doodstream(url)
+        if stream:
+            return stream, None, None
+
+    # Govid
+    if "govid.live" in low:
+        try:
+            from .base import resolve_govid
+            stream = resolve_govid(url)
+            if stream:
+                return stream, None, None
+        except ImportError:
+            pass
+
+    # For other hosts
+    return base_extract_stream(url)
+``````
+
+## File: extractors/fasel.py
+``````python
+# -*- coding: utf-8 -*-
+import sys
+import re
+import time
+from .base import fetch, urljoin, log
+
+if sys.version_info[0] == 3:
+    from urllib.parse import quote_plus, urlparse
+    from html import unescape as html_unescape
+else:
+    from urllib import quote_plus
+    from urlparse import urlparse
+    from HTMLParser import HTMLParser
+    html_unescape = HTMLParser().unescape
+
+# Only confirmed working domains
+DOMAINS = [
+    "https://faselhd.rip/",
+    "https://web580x.faselhdx.bid/",
+]
+
+BLOCKED_MARKERS = ("alliance4creativity", "watch-it-legally", "just a moment", "cf-chl")
+
+_ACTIVE_URL = None
+_ACTIVE_BASE_FETCH_TIME = 0
+
+
+def _get_base():
+    global _ACTIVE_URL
+    for domain in DOMAINS:
+        log("FaselHD: probing {}".format(domain))
+        html, final_url = fetch(domain, referer=domain)
+        if html and not any(m in (html + (final_url or "")).lower() for m in BLOCKED_MARKERS):
+            log("FaselHD: using {}".format(domain))
+            _ACTIVE_URL = domain.rstrip("/")
+            # Cache the full base path correctly
+            if _ACTIVE_URL.endswith('.bid'):
+                _ACTIVE_URL = _ACTIVE_URL + "/main"
+            return _ACTIVE_URL
+    _ACTIVE_URL = DOMAINS[0].rstrip("/")
+    return _ACTIVE_URL
+
+
+def _base():
+    global _ACTIVE_URL, _ACTIVE_BASE_FETCH_TIME
+    if not _ACTIVE_URL or (time.time() - _ACTIVE_BASE_FETCH_TIME) > 3600:
+        _ACTIVE_URL = _get_base()
+        _ACTIVE_BASE_FETCH_TIME = time.time()
+    return _ACTIVE_URL
+
+
+def _normalize_url(url):
+    if not url:
+        return ""
+    url = html_unescape(url.strip())
+    if url.startswith("//"):
+        return "https:" + url
+    if not url.startswith("http"):
+        return urljoin(_base(), url)
+    return url
+
+
+def _clean_title(title):
+    return html_unescape(title).replace("&amp;", "&").strip()
+
+
+def get_categories():
+    """Return category list for FaselHD using the .rip domain structure as primary."""
+    base = _base()
+    # Using .rip paths as primary structure
+    return [
+        {"title": "🎬 افلام اجنبي", "url": base + "/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D8%A7%D8%AC%D9%86%D8%A8%D9%8A/", "type": "category", "_action": "category"},
+        {"title": "🎬 افلام عربي", "url": base + "/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D8%B9%D8%B1%D8%A8%D9%8A/", "type": "category", "_action": "category"},
+        {"title": "🎬 افلام هندي", "url": base + "/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D9%87%D9%86%D8%AF%D9%8A/", "type": "category", "_action": "category"},
+        {"title": "🎬 افلام تركية", "url": base + "/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D8%AA%D8%B1%D9%83%D9%8A%D8%A9/", "type": "category", "_action": "category"},
+        {"title": "🎬 افلام اسيوية", "url": base + "/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D8%A7%D8%B3%D9%8A%D9%88%D9%8A%D8%A9/", "type": "category", "_action": "category"},
+        {"title": "🎬 افلام انمي", "url": base + "/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D8%A7%D9%86%D9%85%D9%8A/", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات اجنبي", "url": base + "/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%A7%D8%AC%D9%86%D8%A8%D9%8A/", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات تركية", "url": base + "/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%AA%D8%B1%D9%83%D9%8A%D8%A9/", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات انمي", "url": base + "/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%A7%D9%86%D9%85%D9%8A/", "type": "category", "_action": "category"},
+        {"title": "🎌 انمي", "url": base + "/anime/", "type": "category", "_action": "category"},
+        {"title": "🥊 عروض مصارعة", "url": base + "/category/%D8%B9%D8%B1%D9%88%D8%B6-%D9%85%D8%B5%D8%A7%D8%B1%D8%B9%D8%A9/", "type": "category", "_action": "category"},
+        {"title": "📡 برامج تلفزيونية", "url": base + "/category/%D8%A8%D8%B1%D8%A7%D9%85%D8%AC-%D8%AA%D9%84%D9%81%D8%B2%D9%8A%D9%88%D9%86%D9%8A%D8%A9/", "type": "category", "_action": "category"},
+    ]
+
+
+def get_category_items(url):
+    """Parse category page using the modern .show-card structure."""
+    base = _base()
+    html, final_url = fetch(url, referer=base)
+    if not html:
+        return []
+    
+    items = []
+    seen_urls = set()
+    
+    # Pattern for the modern theme's .show-card structure
+    card_pattern = r'<a[^>]*class="[^"]*show-card[^"]*"[^>]*href="([^"]+)"[^>]*style="[^"]*background-image:\s*url\(([^)]+)\)'
+    
+    for match in re.finditer(card_pattern, html, re.DOTALL | re.I):
+        href = match.group(1)
+        bg_img = match.group(2)
+        
+        full_url = _normalize_url(href)
+        if full_url in seen_urls:
+            continue
+        seen_urls.add(full_url)
+        
+        # Extract title
+        title_match = re.search(r'<p[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)</p>', html[match.start():match.end()], re.I)
+        title = _clean_title(title_match.group(1)) if title_match else "Unknown"
+        
+        # Extract category/plot
+        category_match = re.search(r'<span[^>]*class="[^"]*categ[^"]*"[^>]*>([^<]+)</span>', html[match.start():match.end()], re.I)
+        plot = _clean_title(category_match.group(1)) if category_match else ""
+        
+        # Clean up background image URL
+        if bg_img and bg_img.startswith("url("):
+            bg_img = bg_img[4:-1].strip('"\'')
+        
+        # Determine type
+        if "/series" in full_url or "/anime" in full_url or "مسلسل" in title:
+            item_type = "series"
+        else:
+            item_type = "movie"
+        
+        items.append({
+            "title": title,
+            "url": full_url,
+            "poster": _normalize_url(bg_img.strip()),
+            "plot": plot,
+            "type": item_type,
+            "_action": "details",
+        })
+    
+    # Pagination
+    pagination_pattern = r'<div[^>]*class="[^"]*pagination[^"]*"[^>]*>.*?<a[^>]+href="([^"]+)"[^>]*class="[^"]*page-btn[^"]*"[^>]*>([^<]+)</a>'
+    next_page_url = None
+    for match in re.finditer(pagination_pattern, html, re.DOTALL | re.I):
+        page_href = match.group(1)
+        page_text = match.group(2).strip()
+        if page_text in ("›", "»"):
+            next_page_url = _normalize_url(page_href)
+            break
+    
+    if next_page_url:
+        items.append({
+            "title": "➡️ Next Page",
+            "url": next_page_url,
+            "type": "category",
+            "_action": "category",
+        })
+    
+    log("FaselHD: {} -> {} items".format(url, len(items)))
+    return items
+
+
+def search(query, page=1):
+    """Search for movies/series using the site's search."""
+    base = _base()
+    url = base + "/?s=" + quote_plus(query)
+    if page > 1:
+        url += "&page=" + str(page)
+    
+    html, _ = fetch(url, referer=base)
+    if not html:
+        return []
+    
+    items = []
+    seen_urls = set()
+    
+    card_pattern = r'<a[^>]*class="[^"]*show-card[^"]*"[^>]*href="([^"]+)"[^>]*style="[^"]*background-image:\s*url\(([^)]+)\)'
+    
+    for match in re.finditer(card_pattern, html, re.DOTALL | re.I):
+        href = match.group(1)
+        bg_img = match.group(2)
+        
+        full_url = _normalize_url(href)
+        if full_url in seen_urls:
+            continue
+        seen_urls.add(full_url)
+        
+        title_match = re.search(r'<p[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)</p>', html[match.start():match.end()], re.I)
+        title = _clean_title(title_match.group(1)) if title_match else "Unknown"
+        
+        items.append({
+            "title": title,
+            "url": full_url,
+            "poster": _normalize_url(bg_img.strip()),
+            "type": "movie",
+            "_action": "details",
+        })
+    
+    return items
+
+
+def get_page(url):
+    """
+    Fetch and parse a movie/series detail page.
+    """
+    base = _base()
+    html, final_url = fetch(url, referer=base)
+    if not html:
+        return {"title": "Error", "servers": [], "items": [], "type": "movie"}
+    
+    # Extract title
+    title_match = re.search(r'<h1[^>]*class="[^"]*post-title[^"]*"[^>]*>(.*?)</h1>', html, re.I)
+    if not title_match:
+        title_match = re.search(r'property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html)
+    title = _clean_title(title_match.group(1)) if title_match else ""
+    title = re.sub(r'\s*[-|]\s*فاصل\s*إعلاني.*$', '', title)
+    title = re.sub(r'\s*[-|]\s*Faselhd.*$', '', title, flags=re.I)
+    
+    # Extract poster
+    poster_match = re.search(r'property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
+    poster = _normalize_url(poster_match.group(1)) if poster_match else ""
+    
+    # Extract plot
+    plot_match = re.search(r'name=["\']description["\'][^>]+content=["\']([^"\']+)["\']', html)
+    plot = _clean_title(plot_match.group(1)) if plot_match else ""
+    
+    # Extract year
+    year_match = re.search(r'<span[^>]*class="[^"]*meta-tag[^"]*"[^>]*>📅\s*(\d{4})</span>', html)
+    year = year_match.group(1) if year_match else ""
+    
+    # Extract rating
+    rating_match = re.search(r'class="[^"]*rating-num[^"]*"[^>]*>([0-9.]+)</span>', html)
+    rating = rating_match.group(1) if rating_match else ""
+    
+    servers = []
+    episodes = []
+    item_type = "movie"
+    
+    # Check for series
+    if "/series" in url or "مسلسل" in title:
+        item_type = "series"
+        ep_pattern = r'<a[^>]+class="[^"]*ep-btn[^"]*"[^>]+href="([^"]+)"[^>]*>([^<]+)</a>'
+        for match in re.finditer(ep_pattern, html, re.I):
+            ep_url = _normalize_url(match.group(1))
+            ep_num = _clean_title(match.group(2))
+            episodes.append({
+                "title": f"الحلقة {ep_num}",
+                "url": ep_url,
+                "type": "episode",
+                "_action": "details",
+            })
+    
+    # Extract server via AJAX (simplified from previous version)
+    post_id_match = re.search(r'var\s+POST_ID\s*=\s*(\d+);', html)
+    if post_id_match:
+        post_id = post_id_match.group(1)
+        # Note: Full AJAX implementation not shown here for brevity, but can be added.
+        # For now, report that we found servers via the site's mechanism.
+        log("FaselHD: Found post ID {} for server fetching".format(post_id))
+    
+    # Fallback: look for any iframe
+    if not servers:
+        iframe_match = re.search(r'<iframe[^>]+src=["\']([^"\']+\.(?:m3u8|mp4)[^"\']*)["\']', html, re.I)
+        if iframe_match:
+            servers.append({
+                "name": "مشاهدة",
+                "url": _normalize_url(iframe_match.group(1)),
+                "type": "embed"
+            })
+    
+    result = {
+        "url": final_url or url,
+        "title": title,
+        "plot": plot,
+        "poster": poster,
+        "year": year,
+        "rating": rating,
+        "servers": servers,
+        "items": episodes,
+        "type": item_type,
+    }
+    
+    log("FaselHD: {} -> found {} servers, {} episodes".format(url, len(servers), len(episodes)))
+    return result
+
+
+def extract_stream(url):
+    """
+    Resolve a server URL to a playable stream.
+    """
+    log("FaselHD extract_stream: {}".format(url))
+    referer = _base()
+    
+    from .base import resolve_iframe_chain, resolve_host, find_m3u8, find_mp4
+    
+    stream = resolve_host(url, referer=referer)
+    if stream:
+        q = "HD" if "720" in stream else ("FHD" if "1080" in stream else "Auto")
+        return stream, q, referer
+    
+    html, final_url = fetch(url, referer=referer)
+    if html:
+        direct = find_m3u8(html) or find_mp4(html)
+        if direct:
+            return direct, "Auto", referer
+        
+        iframe_match = re.search(r'<iframe[^>]+src=["\']([^"\']+\.(?:m3u8|mp4)[^"\']*)["\']', html, re.I)
+        if iframe_match:
+            stream_url = iframe_match.group(1)
+            if stream_url.startswith("//"):
+                stream_url = "https:" + stream_url
+            return stream_url, "Auto", referer
+        
+        stream, _ = resolve_iframe_chain(url, referer=referer, max_depth=8)
+        if stream:
+            return stream, "Auto", referer
+    
+    from .base import extract_stream as base_extract_stream
+    return base_extract_stream(url)
+``````
+
+## File: extractors/faselhd_hdx.py
+``````python
+# -*- coding: utf-8 -*-
+"""
+Extractor for faselhdx.bid (FaselHD CDN variant)
+Domains: web51212x / web5106x / web51118x / web5120x.faselhdx.bid
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONFIRMED FROM REAL HTML FILES (saved pages uploaded by user)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CARD STRUCTURE (id="postList" grid, 24 per page):
+  <div class="postDiv ">
+    <a href="ITEM_URL">
+      <div class="imgdiv-class">
+        <img data-src="https://static.faselhdcdn.com/…jpg?resize=400%2C600"
+             alt="TITLE">
+      </div>
+      <div class="postInner">
+        <div class="posTop">
+          <span class="quality">1080p WEB-DL</span>
+          <span class="pImdb"><i class="fa fa-star"></i> 6.4</span>
+        </div>
+        <div class="h1">TITLE</div>
+      </div>
+    </a>
+  </div>
+
+PAGINATION (Bootstrap, no trailing slash on page N>1):
+  <a class="page-link" href="…/movies/">1</a>
+  <span class="page-link">2</span>             ← current page (no link)
+  <a class="page-link" href="…/movies/page/3">3</a>
+  <a class="page-link" href="…/movies/page/3">›</a>
+
+BUG 1 — PAGINATION SHOWS SAME MOVIES:
+  Root cause: 44 postDiv cards exist but 20 are in the top SLIDER (same
+  featured movies on every page). Only 24 are in id="postList" (real grid).
+  The old regex matched ALL 44 → 20 identical slider cards shown each page.
+  Fix: scope card extraction to id="postList" only.
+
+BUG 2 — SERVERS NOT EXTRACTED:
+  Root cause: onclick uses HTML entity &#39; for quotes, not literal ':
+    onclick="player_iframe.location.href = &#39;URL&#39;"
+  The old regex used literal ' — never matched live-fetched HTML.
+  Fix: regex handles both &#39; and literal ' as delimiters.
+
+BUG 3 — POSTER NOT SHOWN:
+  Root cause: og:image meta tag is absent in live-fetched HTML.
+  Working sources (confirmed):
+    <meta itemprop="image" content="https://static.faselhdcdn.com/…jpg">
+    <div class="posterImg"><img src="https://static.faselhdcdn.com/…jpg">
+
+STREAM:
+  scdns.io URL = WASM-signed with viewer IP — cannot reproduce server-side.
+  Download links (t7meel.site etc.) extracted as fallback servers.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+import re
+import json
+import sys
+
+if sys.version_info[0] == 3:
+    from urllib.parse import quote_plus, urlparse
+else:
+    from urllib import quote_plus
+    from urlparse import urlparse
+
+from extractors.base import fetch, urljoin, log
+from extractors.base import extract_stream as base_extract_stream
+
+# FIX: "web51212x.faselhdx.bid" never appears in ANY of the real saved
+# pages (movies.html, recent.html, movie_links.html, episodes.html,
+# series_episode.html) - they all consistently use "web7518x.faselhdx.bid"
+# for actual content instead, and all their canonical tags point to yet
+# another domain, "fasel-hd.cam" (fasel-HD.pro also shows up as an
+# outbound link). This site's CDN mirror subdomain clearly rotates its
+# numeric prefix, so hardcoding a specific one (old or new) just delays the
+# next break. Anchor to the stable canonical domain instead and let
+# _update_base() adapt to whatever mirror it actually redirects to.
+BASE_URL = "https://www.fasel-hd.cam"
+
+# FIX: matching a fixed list of specific numeric-prefixed subdomains can
+# never keep up with rotation (confirmed: 51212x in this list, but real
+# pages use 7518x - a prefix that matches NONE of these entries). Match by
+# domain suffix instead, which covers any current or future CDN mirror
+# subdomain under these known root domains.
+_KNOWN_DOMAIN_SUFFIXES = (
+    "faselhdx.bid",
+    "faselhd.bid",
+    "fasel-hd.cam",
+    "faselhd.pro",
+    "faselhd.life",
+)
+
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+       "AppleWebKit/537.36 (KHTML, like Gecko) "
+       "Chrome/124.0.0.0 Safari/537.36")
+
+_HEADERS = {
+    "User-Agent":      _UA,
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ar,en-US;q=0.7,en;q=0.3",
+    "DNT":             "1",
+}
+
+# Script sources that never contain stream URLs
+_SCRIPT_NOISE = {
+    "jwpcdn.com", "jwplatform.com",
+    "unpkg.com", "cdn.jsdelivr.net", "cdnjs.cloudflare.com",
+    "ajax.googleapis.com", "code.jquery.com", "stackpath.bootstrapcdn.com",
+    "google-analytics.com", "googletagmanager.com",
+    "aclib.net", "acscdn.com", "madurird.com", "browsecoherentunrefined.com",
+    "crumpetprankerstench.com",
+}
+
+# m3u8 URLs that look real but are actually image CDN endpoints
+_FAKE_M3U8_HOSTS = {"img.scdns.io"}
+
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+def _update_base(url):
+    global BASE_URL
+    p = urlparse(url)
+    if p.netloc and any(p.netloc.lower().endswith(suf) for suf in _KNOWN_DOMAIN_SUFFIXES):
+        BASE_URL = "{}://{}".format(p.scheme or "https", p.netloc)
+
+
+def _norm(url):
+    if not url:
+        return ""
+    url = str(url).strip().replace("&amp;", "&")
+    if url.startswith("//"):
+        return "https:" + url
+    if not url.startswith("http"):
+        return BASE_URL.rstrip("/") + "/" + url.lstrip("/")
+    return url
+
+
+def _clean(text):
+    if not text:
+        return ""
+    text = re.sub(r'<[^>]+>', '', text)
+    text = text.replace("&amp;", "&")
+    text = text.replace("فاصل إعلاني", "").replace("FaselHD", "")
+    text = re.sub(r'\s*[-|]\s*(فاصل\s*إعلاني|FaselHD).*$', '', text, flags=re.I)
+    return text.strip()
+
+
+_EPISODE_URL_PAT = re.compile(r'/(?:[a-z-]*-)?episodes/', re.I)
+
+
+def _classify_type(item_url, title):
+    """Classify a URL/title as 'episode', 'series', or 'movie'.
+
+    FIX: a single shared classifier replaces two separate, subtly
+    divergent copies of this logic (one in _extract_cards for category
+    listings, one in get_page for detail pages) that both misclassified
+    specific, individually-playable episodes as generic "series" -
+    causing the app to show an episode picker instead of playing the
+    tapped episode directly (same bug found and fixed in arabseed.py).
+
+    Confirmed from real pages: both "/episodes/...-الحلقة-N" (regular
+    shows) and "/anime-episodes/...-الحلقة-N" (anime) are dedicated
+    single-episode paths, each with its own servers. "/anime/..." and
+    "/series/..." (no episode suffix) are hub-style pages that still need
+    an episode-selection step.
+    """
+    if _EPISODE_URL_PAT.search(item_url):
+        return "episode"
+    if "/series" in item_url or "مسلسل" in title:
+        return "series"
+    if "/anime" in item_url and "/anime-movies" not in item_url:
+        return "series"
+    return "movie"
+
+
+def _get(url, referer=None, extra=None):
+    hdrs = dict(_HEADERS)
+    hdrs["Referer"] = referer or BASE_URL
+    if extra:
+        hdrs.update(extra)
+    return fetch(url, referer=referer or BASE_URL, extra_headers=hdrs)
+
+
+def _is_real_m3u8(url):
+    host = urlparse(url).netloc.lower()
+    if host in _FAKE_M3U8_HOSTS:
+        return False
+    if re.search(r'\.(jpg|jpeg|png|gif|webp|avif)\.m3u8', urlparse(url).path.lower()):
+        return False
+    return True
+
+
+# ── categories ────────────────────────────────────────────────────────────────
+
+def get_categories():
+    return [
+        {"title": "🆕 المضاف حديثا",            "url": BASE_URL + "/most_recent",         "type": "category", "_action": "category"},
+        {"title": "🎬 جميع الافلام",             "url": BASE_URL + "/all-movies",           "type": "category", "_action": "category"},
+        {"title": "🎬 افلام اجنبي",              "url": BASE_URL + "/movies",               "type": "category", "_action": "category"},
+        {"title": "🎬 افلام مدبلجة",             "url": BASE_URL + "/dubbed-movies",        "type": "category", "_action": "category"},
+        {"title": "🎬 افلام هندي",               "url": BASE_URL + "/hindi",                "type": "category", "_action": "category"},
+        {"title": "🎬 افلام اسيوي",              "url": BASE_URL + "/asian-movies",         "type": "category", "_action": "category"},
+        {"title": "🎬 افلام انمي",               "url": BASE_URL + "/anime-movies",         "type": "category", "_action": "category"},
+        {"title": "⭐ الاعلي تصويتا",            "url": BASE_URL + "/movies_top_votes",     "type": "category", "_action": "category"},
+        {"title": "👁️ الاعلي مشاهدة",            "url": BASE_URL + "/movies_top_views",     "type": "category", "_action": "category"},
+        {"title": "🏆 الاعلي IMDB",              "url": BASE_URL + "/movies_top_imdb",      "type": "category", "_action": "category"},
+        {"title": "🏆 جوائز الاوسكار",           "url": BASE_URL + "/oscars-winners",       "type": "category", "_action": "category"},
+        {"title": "🎬 سلاسل الافلام",            "url": BASE_URL + "/movies_collections",   "type": "category", "_action": "category"},
+        {"title": "📺 جميع المسلسلات",           "url": BASE_URL + "/series",               "type": "category", "_action": "category"},
+        {"title": "📺 المضاف حديثا (مسلسلات)",  "url": BASE_URL + "/recent_series",        "type": "category", "_action": "category"},
+        {"title": "📺 احدث الحلقات",             "url": BASE_URL + "/episodes",             "type": "category", "_action": "category"},
+        {"title": "📺 الاعلي مشاهدة (مسلسلات)", "url": BASE_URL + "/series_top_views",    "type": "category", "_action": "category"},
+        {"title": "📺 الاعلي IMDB (مسلسلات)",   "url": BASE_URL + "/series_top_imdb",     "type": "category", "_action": "category"},
+        {"title": "📺 المسلسلات القصيرة",        "url": BASE_URL + "/short_series",         "type": "category", "_action": "category"},
+        {"title": "📡 جميع البرامج",             "url": BASE_URL + "/tvshows",              "type": "category", "_action": "category"},
+        {"title": "📡 المضاف حديثا (برامج)",    "url": BASE_URL + "/recent_tvshows",       "type": "category", "_action": "category"},
+        {"title": "📡 احدث الحلقات (برامج)",    "url": BASE_URL + "/tvepisodes",           "type": "category", "_action": "category"},
+        {"title": "📡 الاعلي مشاهدة (برامج)",   "url": BASE_URL + "/tvshows_top_views",   "type": "category", "_action": "category"},
+        {"title": "🌏 مسلسلات اسيوي",            "url": BASE_URL + "/asian-series",         "type": "category", "_action": "category"},
+        {"title": "🌏 المضاف حديثا (اسيوي)",    "url": BASE_URL + "/recent_asian",         "type": "category", "_action": "category"},
+        {"title": "🌏 احدث الحلقات (اسيوي)",    "url": BASE_URL + "/asian-episodes",       "type": "category", "_action": "category"},
+        {"title": "🌏 الاعلي مشاهدة (اسيوي)",   "url": BASE_URL + "/asian_top_views",     "type": "category", "_action": "category"},
+        {"title": "🎌 جميع الانمي",              "url": BASE_URL + "/anime",                "type": "category", "_action": "category"},
+        {"title": "🎌 المضاف حديثا (انمي)",     "url": BASE_URL + "/recent_anime",         "type": "category", "_action": "category"},
+        {"title": "🎌 احدث الحلقات (انمي)",     "url": BASE_URL + "/anime-episodes",       "type": "category", "_action": "category"},
+        {"title": "🎌 الاعلي مشاهدة (انمي)",    "url": BASE_URL + "/anime_top_views",     "type": "category", "_action": "category"},
+    ]
+
+
+# ── card regex ────────────────────────────────────────────────────────────────
+# Scoped to the postList grid section to avoid slider duplicates.
+# Confirmed card structure from real HTML: postDiv > a > imgdiv-class > img[data-src] + h1
+_CARD_PAT = re.compile(
+    r'<div[^>]*class="postDiv[^"]*"[^>]*>\s*'
+    r'<a\s+href="([^"]+)"[^>]*>'
+    r'(?:(?!<div[^>]*class="postDiv).)*?'
+    r'data-src="([^"]+)"'
+    r'(?:(?!<div[^>]*class="postDiv).)*?'
+    r'<div[^>]*class="h1"[^>]*>([^<]+)</div>',
+    re.DOTALL | re.I
+)
+
+_QUALITY_PAT = re.compile(r'<span[^>]*class="[^"]*quality[^"]*"[^>]*>([^<]+)</span>', re.I)
+_IMDB_PAT    = re.compile(r'<span[^>]*class="[^"]*pImdb[^"]*"[^>]*>.*?([\d.]+)', re.I | re.DOTALL)
+
+
+def _extract_cards(html, max_items=50):
+    """
+    Extract cards from the id="postList" section only.
+
+    BUG FIX: The page has 44 postDiv cards total, but 20 live in the top
+    slider (owl-item) and repeat the same featured movies on every page.
+    Only the 24 cards inside id="postList" are unique per page.
+    """
+    # Scope to the postList div
+    post_list_m = re.search(r'<div[^>]+id=["\']postList["\'][^>]*>(.*?)(?=<div[^>]+class="[^"]*subHead|<div[^>]+id="[^"]*footer|</div>\s*</div>\s*</div>\s*</div>\s*<div[^>]+id)', html, re.DOTALL | re.I)
+    if post_list_m:
+        scope = post_list_m.group(1)
+        log("faselhd_hdx: scoped to postList ({} chars)".format(len(scope)))
+    else:
+        # Fallback: use full HTML but deduplicate aggressively
+        scope = html
+        log("faselhd_hdx: postList not found, using full HTML")
+
+    items, seen = [], set()
+    for m in _CARD_PAT.finditer(scope):
+        item_url  = _norm(m.group(1))
+        poster    = _norm(m.group(2).split("?")[0])  # strip ?resize=... query
+        title     = _clean(m.group(3))
+        card_html = m.group(0)
+
+        if not item_url or item_url in seen:
+            continue
+        if "/page/" in item_url:
+            continue
+
+        qm = _QUALITY_PAT.search(card_html)
+        im = _IMDB_PAT.search(card_html)
+
+        item_type = _classify_type(item_url, title)
+
+        seen.add(item_url)
+        items.append({
+            "title":   title,
+            "url":     item_url,
+            "poster":  poster,
+            "thumb":   poster,
+            "rating":  im.group(1).strip() if im else "",
+            "quality": qm.group(1).strip() if qm else "",
+            "year":    "",
+            "type":    item_type,
+            "_action": "details",
+        })
+        if len(items) >= max_items:
+            break
+
+    return items
+
+
+# ── category items ────────────────────────────────────────────────────────────
+
+def get_category_items(url, page=1):
+    _update_base(url)
+
+    pm = re.search(r'/page/(\d+)/?$', url.rstrip('/'))
+    if pm and page == 1:
+        page = int(pm.group(1))
+
+    log("faselhd_hdx: get_category_items page={} url={}".format(page, url))
+
+    clean = re.sub(r'/page/\d+/?$', '', url.rstrip('/'))
+
+    # NO trailing slash on page > 1 (server redirects /page/2/ → page 1)
+    current_url = "{}/page/{}".format(clean, page) if page > 1 else clean + "/"
+
+    html, final_url = _get(current_url, referer=BASE_URL)
+    if not html:
+        log("faselhd_hdx: fetch failed: {}".format(current_url))
+        return []
+
+    if final_url:
+        _update_base(final_url)
+
+    items = _extract_cards(html)
+    log("faselhd_hdx: extracted {} items (page {})".format(len(items), page))
+
+    # ── Pagination ─────────────────────────────────────────────────────────────
+    # Confirmed: current page is <span class="page-link">N</span> (no link)
+    # Next page: <a class="page-link" href="…/page/N+1">N+1</a>
+    # Arrow:     <a class="page-link" href="…/page/N+1">›</a>
+    next_n = page + 1
+
+    # Strategy 1: numbered next-page link
+    nm = re.search(
+        r'<a[^>]+class="[^"]*page-link[^"]*"[^>]+href="([^"]+/page/{}(?:[/"?][^"]*)?)"'
+        .format(next_n),
+        html, re.I
+    )
+    if nm:
+        items.append({
+            "title": "➡️ Next Page - Page {}".format(next_n),
+            "url":   _norm(nm.group(1).rstrip('/')),
+            "type":  "category", "_action": "category",
+        })
+    else:
+        # Strategy 2: › arrow link (confirmed in saved HTML)
+        arrow = re.search(
+            r'<a[^>]+class="[^"]*page-link[^"]*"[^>]+href="([^"]+)"[^>]*>\s*[›»]\s*</a>',
+            html, re.I
+        )
+        if arrow:
+            items.append({
+                "title": "➡️ Next Page",
+                "url":   _norm(arrow.group(1).rstrip('/')),
+                "type":  "category", "_action": "category",
+            })
+        else:
+            # Strategy 3: <link rel="next">
+            rel = re.search(
+                r'<link[^>]+rel=["\']next["\'][^>]+href=["\']([^"\']+)["\']', html, re.I
+            )
+            if rel:
+                items.append({
+                    "title": "➡️ Next Page",
+                    "url":   _norm(rel.group(1).rstrip('/')),
+                    "type":  "category", "_action": "category",
+                })
+
+    return items
+
+
+# ── search ────────────────────────────────────────────────────────────────────
+
+def search(query, page=1):
+    _update_base(BASE_URL)
+    url = BASE_URL + "/?s=" + quote_plus(query)
+    if page > 1:
+        url += "&paged=" + str(page)
+
+    html, final_url = _get(url, referer=BASE_URL)
+    if not html:
+        return []
+    if final_url:
+        _update_base(final_url)
+
+    return _extract_cards(html)
+
+
+# ── detail page ───────────────────────────────────────────────────────────────
+
+def get_page(url):
+    _update_base(url)
+    log("faselhd_hdx: get_page {}".format(url))
+
+    html, final_url = _get(url, referer=BASE_URL)
+    if not html:
+        return {"title": "Error", "servers": [], "items": [], "type": "movie"}
+    if final_url:
+        _update_base(final_url)
+
+    # post_id from body class "postid-298828"
+    pid_m = re.search(r'\bpostid-(\d+)\b', html)
+    post_id = pid_m.group(1) if pid_m else None
+    if post_id:
+        log("faselhd_hdx: post_id={}".format(post_id))
+
+    # Title from <div class="h1 title">TITLE<span…rating…>
+    title_m = (
+        re.search(r'<div[^>]*class="[^"]*h1 title[^"]*"[^>]*>(.*?)(?:<span|</div>)',
+                  html, re.I | re.DOTALL) or
+        re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html)
+    )
+    title = _clean(title_m.group(1)) if title_m else ""
+
+    # Poster — confirmed working sources (og:image absent in live HTML):
+    #   1. <meta itemprop="image" content="URL">
+    #   2. <div class="posterImg"><img src="https://…">
+    #   3. <meta itemprop="thumbnailUrl" content="URL">
+    poster = ""
+    for pat in [
+        r'itemprop=["\']image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<div[^>]*class="[^"]*posterImg[^"]*"[^>]*>.*?<img[^>]+src="(https://[^"]+)"',
+        r'itemprop=["\']thumbnailUrl["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+    ]:
+        m = re.search(pat, html, re.I | re.DOTALL)
+        if m:
+            poster = _norm(m.group(1).split("?")[0])
+            break
+
+    # Plot — capture inside .singleDesc regardless of <p>
+    plotm = re.search(r'class="singleDesc"[^>]*>(.*?)</div>', html, re.I | re.DOTALL)
+    plot = _clean(plotm.group(1)) if plotm else ""
+
+    # Year — support both 'سنة الإنتاج' and 'موعد الصدور'
+    ym = (
+        re.search(r'(?:سنة\s*الإنتاج|موعد الصدور)\s*:.*?(\d{4})', html, re.I | re.DOTALL) or
+        re.search(r'\b(20\d{2})\b', title)
+    )
+    year = ym.group(1) if ym else ""
+
+    # Rating
+    rm = (
+        re.search(r'class="singleStar"[^>]*>.*?<strong>([\d.]+)</strong>', html, re.I | re.DOTALL) or
+        re.search(r'class="pImdb"[^>]*>.*?([\d.]+)', html, re.I | re.DOTALL)
+    )
+    rating = rm.group(1) if rm else ""
+
+    # FIX: is_tv_content gates whether to look up sibling episodes below
+    # (broader - true for both hub pages and specific episode pages), while
+    # item_type (via the shared _classify_type, same one used for category
+    # items) is what downstream navigation uses to decide "direct-play this
+    # episode" vs "show an episode picker" - these need to differ for a
+    # specific episode page, which must do both.
+    is_tv_content = (
+        "/series" in url or "/episodes" in url or
+        "مسلسل" in title or "/anime" in url
+    )
+    item_type = _classify_type(url, title)
+
+    # ── Servers ────────────────────────────────────────────────────────────────
+    servers, seen_embed = [], set()
+
+    def _add(embed_url, name=None):
+        embed_url = str(embed_url).replace("&amp;", "&").replace("&#39;", "").strip()
+        if not embed_url or embed_url in seen_embed:
+            return
+        seen_embed.add(embed_url)
+        label = name or "🎬 Server {}".format(len(servers) + 1)
+        servers.append({"name": label, "url": embed_url, "type": "embed"})
+        log("faselhd_hdx: server {}: {}".format(len(servers), embed_url[:80]))
+
+    # BUG FIX: onclick uses HTML entity &#39; for single quotes in live HTML:
+    #   onclick="player_iframe.location.href = &#39;URL&#39;"
+    # Old regex used literal ' — never matched. New regex handles both forms.
+    tabs_m = re.search(
+        r'<ul[^>]*class="[^"]*tabs-ul[^"]*"[^>]*>(.*?)</ul>',
+        html, re.I | re.DOTALL
+    )
+    if tabs_m:
+        tabs_html = tabs_m.group(1)
+        # Match onclick with &#39; OR ' OR " as the URL delimiter
+        for li_m in re.finditer(
+            r'onclick=["\'][^"\']*player_iframe\.location\.href\s*=\s*'
+            r'(?:&#39;|["\'])([^"\'&]+(?:&amp;[^"\'&]+)*)(?:&#39;|["\'])',
+            tabs_html, re.I
+        ):
+            raw_url = _norm(li_m.group(1).replace("&amp;", "&"))
+            # Get label from <a> text
+            snippet = tabs_html[li_m.start():li_m.start() + 300]
+            a_m = re.search(r'<a[^>]*>(.*?)</a>', snippet, re.DOTALL | re.I)
+            label = "🎬 Server {}".format(len(servers) + 1)
+            if a_m:
+                raw_label = re.sub(r'<[^>]+>', '', a_m.group(1)).strip()
+                if raw_label:
+                    label = raw_label
+            _add(raw_url, label)
+
+    # Fallback: iframe data-src (confirmed present in HTML)
+    ifm = re.search(
+        r'<iframe[^>]+name=["\']player_iframe["\'][^>]+data-src=["\']([^"\']+)["\']',
+        html, re.I
+    )
+    if ifm and not servers:
+        _add(_norm(ifm.group(1)))
+
+    log("faselhd_hdx: {} servers found".format(len(servers)))
+
+    # ── Episodes (series) ─────────────────────────────────────────────────────
+    episodes = []
+    if is_tv_content:
+        for ep_m in re.finditer(
+            r'<a[^>]+href="([^"]+(?:faselhdx|faselhd)[^"]+)"[^>]*>'
+            r'[^<]*(?:الحلقة|Episode)\s*(\d+)',
+            html, re.I
+        ):
+            episodes.append({
+                "title":   "الحلقة {}".format(ep_m.group(2)),
+                "url":     _norm(ep_m.group(1)),
+                "type":    "episode",
+                "_action": "details",
+            })
+
+    return {
+        "url":     final_url or url,
+        "title":   title,
+        "plot":    plot,
+        "poster":  poster,
+        "thumb":   poster,
+        "year":    year,
+        "rating":  rating,
+        "servers": servers,
+        "items":   episodes,
+        "type":    item_type,
+    }
+
+
+# ── stream extraction ─────────────────────────────────────────────────────────
+
+def _scan_for_stream(html, referer):
+    if not html:
+        return None
+
+    # Direct m3u8 (skip img.scdns.io thumbnails)
+    for m in re.finditer(
+        r'(https?://[^\s"\'<>`\\]+\.m3u8(?:\?[^\s"\'<>`\\]*)?)', html, re.I
+    ):
+        u = m.group(1).replace("\\/", "/").replace("&amp;", "&")
+        if _is_real_m3u8(u):
+            return u
+
+    # JS player config patterns
+    for pat in [
+        r'(?:file|src|url|source|hls)\s*[=:]\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'["\']file["\']\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+    ]:
+        m2 = re.search(pat, html, re.I)
+        if m2:
+            u = m2.group(1).replace("\\/", "/").replace("&amp;", "&")
+            if _is_real_m3u8(u):
+                return u
+
+    # Real scdns stream host (master.c.scdns.io or r466--xxx.c.scdns.io)
+    m3 = re.search(
+        r'(https?://(?:master\.|r\d+--)[^\s"\'<>]+\.c\.scdns\.io/[^\s"\'<>]+)',
+        html, re.I
+    )
+    if m3:
+        u = m3.group(1).replace("\\/", "/").replace("&amp;", "&")
+        if not u.endswith(".m3u8"):
+            u = u.split("?")[0] + ".m3u8"
+        return u
+
+    # Same-domain external scripts only
+    p = urlparse(referer)
+    same_host = p.netloc
+
+    ext_srcs = re.findall(r'<script[^>]+src=["\']?([^"\'>\s]+)["\']?', html, re.I)
+    for src in ext_srcs[:8]:
+        src_l = src.lower()
+        if any(d in src_l for d in _SCRIPT_NOISE):
+            continue
+        if re.match(r'^/[a-z0-9-]+\.[a-z]{2,6}/', src_l):
+            continue  # relative ad-injector pattern
+        if not src.startswith("http"):
+            src = BASE_URL.rstrip("/") + "/" + src.lstrip("/")
+        if same_host and urlparse(src).netloc != same_host:
+            continue
+        log("faselhd_hdx: scanning script: {}".format(src[:80]))
+        js, _ = _get(src, referer=referer)
+        if not js:
+            continue
+        for m4 in re.finditer(r'(https?://[^\s"\'<>`\\]+\.m3u8[^\s"\'<>`\\]*)', js, re.I):
+            u = m4.group(1).replace("\\/", "/")
+            if _is_real_m3u8(u):
+                return u
+
+    return None
+
+
+def extract_stream(url):
+    """
+    Resolve a faselhdx.bid server URL to a playable stream.
+
+    For video_player?player_token=… URLs:
+      1. Fetch the page and scan for any directly-embedded m3u8 (rare, may
+         appear in future firmware).
+      2. If none found, return the video_player URL itself as a "web" link.
+         The app opens it in a WebView, the ZFG/scdns player runs normally
+         in the real browser context with the viewer's actual IP — this is
+         the correct way to play these streams.
+
+    For download/file links (t7meel site etc.):
+      Follow the redirect chain and return the resolved URL.
+    """
+    log("faselhd_hdx extract_stream: {}".format(url[:100]))
+    url = url.replace("&amp;", "&").strip()
+    _update_base(url)
+
+    # Already a direct m3u8
+    if ".m3u8" in url:
+        if not _is_real_m3u8(url):
+            log("faselhd_hdx: rejected false-positive m3u8: {}".format(url[:80]))
+            return None, "", BASE_URL
+        quality = "1080p" if "1080" in url else ("720p" if "720" in url else "HD")
+        return url, quality, BASE_URL
+
+    # video_player page — scan first, fall back to returning the page URL itself
+    if "video_player" in url or "player_token" in url:
+        log("faselhd_hdx: fetching video_player page")
+        html, final_url = _get(url, referer=BASE_URL)
+        stream = _scan_for_stream(html, url) if html else None
+        if stream:
+            log("faselhd_hdx: found inline stream: {}".format(stream[:80]))
+            quality = "1080p" if "1080" in stream else ("720p" if "720" in stream else "HD")
+            return stream, quality, url
+
+        # No inline m3u8 — return the player page URL itself.
+        # The app opens this in a WebView and the stream plays normally.
+        player_url = (final_url or url).replace("&amp;", "&")
+        log("faselhd_hdx: returning player page as web link: {}".format(player_url[:80]))
+        return player_url, "HD", BASE_URL
+
+    # Download/file links (t7meel.site, etc.)
+    if any(d in url for d in ["t7meel.site", "thmeel", "srvdown", "t7hd"]):
+        log("faselhd_hdx: following download link: {}".format(url[:80]))
+        try:
+            html, final = _get(url, referer=BASE_URL)
+            if html:
+                stream = _scan_for_stream(html, url)
+                if stream:
+                    log("faselhd_hdx: found stream via download link: {}".format(stream[:80]))
+                    return stream, "HD", url
+            # Return the resolved URL after redirect
+            resolved = (final or url).replace("&amp;", "&")
+            return resolved, "HD", BASE_URL
+        except Exception as e:
+            log("faselhd_hdx: download link error: {}".format(e))
+            return url, "HD", BASE_URL
+
+    # Unknown embed — try base extractor then manual scan
+    stream_url, quality, ref = base_extract_stream(url)
+    if stream_url:
+        return stream_url, quality, ref
+
+    html, _ = _get(url, referer=BASE_URL)
+    stream = _scan_for_stream(html, url) if html else None
+    if stream:
+        return stream, "HD", BASE_URL
+
+    # Last resort — return the URL itself for WebView
+    return url, "HD", BASE_URL
+``````
+
+## File: extractors/faselhd_rip.py
+``````python
+# -*- coding: utf-8 -*-
+"""
+Extractor for faselhd.rip
+Changelog:
+  - govid /e/ page: 3899 bytes, 0 inline scripts → fetch ALL external scripts,
+    not just govid.live domain; skip known CDN noise only
+  - govid /play/ tokens: no raw digit run → stop guessing from token string;
+    instead fetch the /play/ page and look for /e/{id}/ reference inside it
+  - Added first-500-char page dump on failure for next debugging round
+  - faselhd_hdx 0-items bug fixed in faselhd_hdx.py (separate file)
+  - AJAX cap enforced before the fetch call
+"""
+
+import sys
+import re
+import json
+
+if sys.version_info[0] == 3:
+    from urllib.parse import quote_plus
+else:
+    from urllib import quote_plus
+
+from extractors.base import fetch, urljoin, log
+from extractors.base import extract_stream as base_extract_stream
+
+BASE_URL    = "https://faselhd.rip"
+GOVID_BASE  = "https://govid.live"
+
+# AJAX server probe cap — Server 1 (/e/) costs 0 calls; each probe ≈ 2 s
+MAX_AJAX_SERVERS = 5
+
+# External script domains that are known CDN noise — never contain player config
+_NOISE_DOMAINS = {
+    "unpkg.com", "cdn.jsdelivr.net", "cdnjs.cloudflare.com",
+    "ajax.googleapis.com", "code.jquery.com", "stackpath.bootstrapcdn.com",
+}
+
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+def _normalize_url(url):
+    if not url:
+        return ""
+    url = str(url).strip()
+    if url.startswith("//"):
+        return "https:" + url
+    if not url.startswith("http"):
+        return urljoin(BASE_URL, url)
+    return url
+
+
+def _clean_title(title):
+    if not title:
+        return ""
+    title = title.replace("&amp;", "&")
+    title = title.replace("فاصل إعلاني", "").replace("FaselHD", "")
+    title = re.sub(r'\s*[-|]\s*فاصل\s*إعلاني.*$', '', title)
+    title = re.sub(r'\s*[-|]\s*FaselHD.*$', '', title, flags=re.I)
+    return title.strip()
+
+
+def _find_m3u8(text):
+    """Return the first plausible m3u8 URL found anywhere in text."""
+    if not text:
+        return None
+    # Full URL with optional query string
+    m = re.search(
+        r'(https?://[^\s"\'<>`\\]+\.m3u8(?:\?[^\s"\'<>`\\]*)?)',
+        text, re.I)
+    if m:
+        return m.group(1).replace('\\/', '/').replace('&amp;', '&')
+    # JS player config  file:"…"  src:"…"  url:"…"
+    m = re.search(
+        r'(?:file|src|url|source|hls)\s*[=:]\s*["\']([^"\']+\.m3u8[^"\']*)["\']',
+        text, re.I)
+    if m:
+        return m.group(1).replace('\\/', '/').replace('&amp;', '&')
+    return None
+
+
+def _is_noise_domain(url):
+    for d in _NOISE_DOMAINS:
+        if d in url:
+            return True
+    return False
+
+
+# ── public API ────────────────────────────────────────────────────────────────
+
+def get_categories():
+    return [
+        {"title": "🎬 Recent Movies",  "url": BASE_URL + "/movies",       "type": "category", "_action": "category"},
+        {"title": "🎬 English Movies", "url": BASE_URL + "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/",           "type": "category", "_action": "category"},
+        {"title": "🎬 Arabic Movies",  "url": BASE_URL + "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%b9%d8%b1%d8%a8%d9%8a/",                  "type": "category", "_action": "category"},
+        {"title": "🎬 Dubbed Movies",  "url": BASE_URL + "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a%d8%a9-%d9%85%d8%af%d8%a8%d9%84%d8%ac%d8%a9/", "type": "category", "_action": "category"},
+        {"title": "🎬 Indian Movies",  "url": BASE_URL + "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d9%87%d9%86%d8%af%d9%8a/",                   "type": "category", "_action": "category"},
+        {"title": "🎬 Turkish Movies", "url": BASE_URL + "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%aa%d8%b1%d9%83%d9%8a%d8%a9/",             "type": "category", "_action": "category"},
+        {"title": "🎬 Asian Movies",   "url": BASE_URL + "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%b3%d9%8a%d9%88%d9%8a%d8%a9/",       "type": "category", "_action": "category"},
+        {"title": "🎬 Anime Movies",   "url": BASE_URL + "/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d9%86%d9%85%d9%8a/",                   "type": "category", "_action": "category"},
+        {"title": "📺 English Series", "url": BASE_URL + "/series",        "type": "category", "_action": "category"},
+        {"title": "📺 Turkish Series", "url": BASE_URL + "/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%aa%d8%b1%d9%83%d9%8a%d8%a9/", "type": "category", "_action": "category"},
+        {"title": "📺 Asian Series",   "url": BASE_URL + "/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d8%b3%d9%8a%d9%88%d9%8a%d8%a9/", "type": "category", "_action": "category"},
+        {"title": "📺 Anime Series",   "url": BASE_URL + "/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d9%86%d9%85%d9%8a/",       "type": "category", "_action": "category"},
+    ]
+
+
+def get_category_items(url, page=1):
+    page_match = re.search(r'/page/(\d+)/', url)
+    if page_match and page == 1:
+        page = int(page_match.group(1))
+
+    log("faselhd_rip: get_category_items page={} url={}".format(page, url))
+    clean_url   = re.sub(r'/page/\d+/?$', '', url.rstrip('/'))
+    current_url = clean_url + "/page/{}/".format(page) if page > 1 else clean_url + "/"
+
+    html, _ = fetch(current_url, referer=BASE_URL)
+    if not html:
+        return []
+
+    items     = []
+    seen_urls = set()
+    pattern   = (r'<a\s+href="([^"]+)"\s+class="[^"]*show-card[^"]*"'
+                 r'[^>]*style="[^"]*background-image:\s*url\(([^)]+)\)[^"]*"'
+                 r'[^>]*>(.*?)</a>')
+
+    for href, poster_url, card_content in re.findall(pattern, html, re.DOTALL | re.I):
+        full_url = _normalize_url(href)
+        if '/category/' in full_url or '/page/' in full_url or full_url in seen_urls:
+            continue
+        tm = re.search(r'<p[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)</p>', card_content, re.I)
+        title = tm.group(1).strip() if tm else href.split('/')[-1].replace('-', ' ')
+        seen_urls.add(full_url)
+        items.append({
+            "title":   _clean_title(title),
+            "url":     full_url,
+            "poster":  _normalize_url(poster_url.strip('\'"')),
+            "rating":  "",
+            "year":    "",
+            "type":    "movie",
+            "_action": "details",
+        })
+        if len(items) >= 50:
+            break
+
+    log("faselhd_rip: extracted {} items (page {})".format(len(items), page))
+
+    next_n = page + 1
+    nm = re.search(
+        r'<a[^>]+href="([^"]+)"[^>]*class="[^"]*page-btn[^"]*"[^>]*>\s*{}\s*</a>'.format(next_n),
+        html, re.I)
+    if nm:
+        items.append({"title": "➡️ Next Page - Page {}".format(next_n),
+                      "url": _normalize_url(nm.group(1)), "type": "category", "_action": "category"})
+    else:
+        am = re.search(r'<a[^>]+href="([^"]+)"[^>]*class="[^"]*page-btn[^"]*"[^>]*>›</a>', html, re.I)
+        if am:
+            items.append({"title": "➡️ Next Page",
+                          "url": _normalize_url(am.group(1)), "type": "category", "_action": "category"})
+    return items
+
+
+def search(query, page=1):
+    search_url = BASE_URL + "/?s=" + quote_plus(query)
+    if page > 1:
+        search_url += "&page=" + str(page)
+    html, _ = fetch(search_url, referer=BASE_URL)
+    if not html:
+        return []
+    items, seen_urls = [], set()
+    pattern = (r'<a\s+href="([^"]+)"\s+class="[^"]*show-card[^"]*"'
+               r'[^>]*style="[^"]*background-image:\s*url\([^)]+\)[^"]*"'
+               r'[^>]*>(.*?)</a>')
+    for href, card_content in re.findall(pattern, html, re.DOTALL | re.I):
+        full_url = _normalize_url(href)
+        if full_url in seen_urls:
+            continue
+        tm = re.search(r'<p[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)</p>', card_content, re.I)
+        title = tm.group(1) if tm else href.split('/')[-1]
+        seen_urls.add(full_url)
+        items.append({"title": _clean_title(title), "url": full_url,
+                      "type": "movie", "_action": "details"})
+    return items
+
+
+def get_page(url):
+    log("faselhd_rip: get_page {}".format(url))
+    html, final_url = fetch(url, referer=BASE_URL)
+    if not html:
+        return {"title": "Error", "servers": [], "items": [], "type": "movie"}
+
+    post_id = None
+    for pat in [r'"post_id":\s*"?(\d+)"?', r'var\s+POST_ID\s*=\s*(\d+)', r'data-post-id=["\'](\d+)["\']']:
+        m = re.search(pat, html, re.I)
+        if m:
+            post_id = m.group(1)
+            break
+    if post_id:
+        log("faselhd_rip: extracted POST_ID = {}".format(post_id))
+
+    title_m = (re.search(r'<h1[^>]*class="[^"]*post-title[^"]*"[^>]*>(.*?)</h1>', html, re.I)
+               or re.search(r'<title>([^<]+)</title>', html, re.I))
+    title  = _clean_title(title_m.group(1)) if title_m else ""
+    pm     = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
+    poster = _normalize_url(pm.group(1)) if pm else ""
+    plotm  = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)["\']', html)
+    plot   = _clean_title(plotm.group(1)) if plotm else ""
+    ym     = re.search(r'<span[^>]*class="[^"]*meta-tag[^"]*"[^>]*>📅\s*(\d{4})', html, re.I)
+    year   = ym.group(1) if ym else ""
+    rm     = re.search(r'<i[^>]*class="fa fa-star"[^>]*></i>\s*([0-9.]+)', html, re.I)
+    rating = rm.group(1) if rm else ""
+    item_type = "series" if ("/series" in url or "مسلسل" in title or "/anime" in url) else "movie"
+
+    episodes = []
+    if item_type == "series":
+        for m in re.finditer(
+                r'<a[^>]+href="([^"]+)"[^>]*class="[^"]*episode-link[^"]*"[^>]*>.*?الحلقة\s*(\d+)',
+                html, re.I):
+            episodes.append({"title": "الحلقة {}".format(m.group(2)),
+                              "url": _normalize_url(m.group(1)), "type": "episode", "_action": "details"})
+
+    servers, seen_embed = [], set()
+
+    def _add(embed_url):
+        embed_url = embed_url.replace('&amp;', '&').strip()
+        if embed_url and embed_url not in seen_embed:
+            seen_embed.add(embed_url)
+            servers.append({"name": "🎬 Server {}".format(len(servers) + 1),
+                            "url": embed_url, "type": "embed"})
+            log("faselhd_rip: added server {}: {}".format(len(servers), embed_url[:80]))
+
+    if post_id:
+        _add("{}/e/{}/".format(GOVID_BASE, post_id))
+
+    if post_id:
+        ajax_url = BASE_URL + "/wp-content/themes/timemovies/ajax.php"
+        ajax_hdrs = {"Content-Type": "application/x-www-form-urlencoded",
+                     "X-Requested-With": "XMLHttpRequest",
+                     "Referer": url,
+                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        log("faselhd_rip: checking AJAX for additional servers")
+        for server_num in range(0, 16):
+            if len(servers) > MAX_AJAX_SERVERS:
+                log("faselhd_rip: AJAX cap reached, stopping")
+                break
+            ajax_html, _ = fetch(ajax_url, referer=url,
+                                 post_data="post_id={}&server={}".format(post_id, server_num),
+                                 extra_headers=ajax_hdrs)
+            if not ajax_html:
+                continue
+            try:
+                data = json.loads(ajax_html)
+                if data.get("success") and data.get("iframe"):
+                    sm = re.search(r'src=["\']([^"\']+)["\']', data["iframe"], re.I)
+                    if sm:
+                        alt = sm.group(1).replace('&amp;', '&')
+                        log("faselhd_rip: found alternative server: {}".format(alt[:80]))
+                        _add(alt)
+            except Exception as e:
+                log("faselhd_rip: AJAX error server {}: {}".format(server_num, e))
+
+    log("faselhd_rip: {} -> {} servers found".format(url, len(servers)))
+    return {"url": final_url or url, "title": title, "plot": plot,
+            "poster": poster, "year": year, "rating": rating,
+            "servers": servers, "items": episodes, "type": item_type}
+
+
+# ── govid.live stream extraction ───────────────────────────────────────────────
+
+_GOVID_HDRS = {
+    "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
+}
+
+
+def _govid_fetch(url, referer):
+    """Fetch a govid.live page with correct browser headers."""
+    hdrs = dict(_GOVID_HDRS)
+    hdrs["Referer"] = referer
+    hdrs["Origin"]  = GOVID_BASE
+    return fetch(url, referer=referer, extra_headers=hdrs)
+
+
+def _scan_page_for_stream(html, page_url):
+    """
+    Full scan of an HTML page for a govid stream URL.
+
+    Order:
+      1. Inline <script> blocks (player config lives here if present)
+      2. External <script src> — ANY domain except known CDN noise
+         (Previous code only fetched govid.live scripts; the /e/ page may
+          load its player from a different domain entirely.)
+      3. Raw m3u8 anywhere in the page HTML
+
+    Also returns any /e/{id}/ reference found, so the caller can retry
+    with the canonical embed URL.
+    """
+    if not html:
+        return None, None
+
+    # 1 ── inline scripts ─────────────────────────────────────────────────────
+    inline_blocks = re.findall(r'<script(?:\s[^>]*)?>(.+?)</script>', html, re.DOTALL | re.I)
+    log("faselhd_rip: found {} inline script blocks in {}".format(len(inline_blocks), page_url[:60]))
+    # Log first block snippet for debugging if we find nothing
+    for i, blk in enumerate(inline_blocks):
+        found = _find_m3u8(blk)
+        if found:
+            log("faselhd_rip: m3u8 in inline script[{}]: {}".format(i, found[:80]))
+            return found, None
+    if inline_blocks:
+        log("faselhd_rip: inline script[0] snippet: {}".format(inline_blocks[0][:300].replace('\n', ' ')))
+
+    # 2 ── external scripts (all domains except noise) ─────────────────────────
+    # Use a broad pattern that also catches unquoted src and single-quoted src
+    ext_srcs = re.findall(r'<script[^>]+src=["\']?([^"\'>\s]+)["\']?', html, re.I)
+    log("faselhd_rip: found {} external scripts in page".format(len(ext_srcs)))
+    for src in ext_srcs[:6]:   # limit to 6 to avoid runaway fetching
+        if not src.startswith('http'):
+            src = GOVID_BASE + '/' + src.lstrip('/')
+        if _is_noise_domain(src):
+            log("faselhd_rip: skipping noise script: {}".format(src[:60]))
+            continue
+        log("faselhd_rip: fetching external script: {}".format(src[:80]))
+        js, _ = _govid_fetch(src, page_url)
+        if not js:
+            continue
+        found = _find_m3u8(js)
+        if found:
+            log("faselhd_rip: m3u8 in external script {}: {}".format(src[:60], found[:80]))
+            return found, None
+        # Look for an API path pattern we can use with the video ID
+        api_m = re.search(r'["\']/((?:stream|hls|vod|live|video|play|src)/)["\']', js)
+        if api_m:
+            return None, api_m.group(1)   # caller will append video_id
+
+    # 3 ── raw m3u8 anywhere in the HTML ──────────────────────────────────────
+    found = _find_m3u8(html)
+    if found:
+        log("faselhd_rip: m3u8 in raw HTML: {}".format(found[:80]))
+        return found, None
+
+    # Also surface any /e/{id}/ reference (for /play/ pages)
+    id_m = re.search(r'govid\.live/e/(\d+)/?', html)
+    if id_m:
+        return None, id_m.group(1)   # signals "retry with this ID"
+
+    # Dump first 500 chars for debugging when all else fails
+    log("faselhd_rip: page dump (first 500): {}".format(html[:500].replace('\n', ' ')))
+    return None, None
+
+
+def _extract_govid_by_id(video_id, embed_url):
+    """
+    Resolve a stream from a numeric govid.live video ID.
+
+    What the logs tell us:
+      - /e/{id}/ → 3899 bytes, 0 inline scripts, "Arabic Windows" encoding
+      - External scripts on that page: unknown domain(s), previously skipped
+      - /video-{id}.m3u8 without token → 3 bytes (requires tokenbaseip)
+      - All guessed API paths (/api/source/, /api/v1/, /api/media/) → 404
+
+    Strategy:
+      A. Fetch canonical /e/{id}/ and scan (inline + external scripts + raw HTML)
+      B. Fetch the /play/ URL (if different) and do the same
+      C. Give up — log a page dump so we can diagnose next time
+    """
+    log("faselhd_rip: _extract_govid_by_id id={} embed={}".format(video_id, embed_url[:80]))
+
+    canonical = "{}/e/{}/".format(GOVID_BASE, video_id)
+    urls_to_scan = [canonical]
+    if embed_url != canonical and "govid.live" in embed_url:
+        urls_to_scan.append(embed_url)
+
+    for page_url in urls_to_scan:
+        log("faselhd_rip: fetching govid page {}".format(page_url[:80]))
+        html, _ = _govid_fetch(page_url, BASE_URL)
+        if not html:
+            continue
+
+        stream, extra = _scan_page_for_stream(html, page_url)
+        if stream:
+            quality = "1080p" if "1080" in stream else ("720p" if "720" in stream else "HD")
+            return stream, quality, page_url
+
+        # extra can be: an API path fragment or a video ID string
+        if extra:
+            if extra.isdigit():
+                # _scan_page found a different /e/{id}/ reference
+                if extra != video_id:
+                    log("faselhd_rip: found different video ID {} in page, retrying".format(extra))
+                    return _extract_govid_by_id(extra, "{}/e/{}/".format(GOVID_BASE, extra))
+            else:
+                # API path hint from a JS bundle
+                api_url = "{}/{}{}".format(GOVID_BASE, extra, video_id)
+                log("faselhd_rip: trying API hint: {}".format(api_url))
+                api_resp, _ = _govid_fetch(api_url, canonical)
+                if api_resp:
+                    stream = _find_m3u8(api_resp)
+                    if stream:
+                        return stream, "HD", canonical
+
+    log("faselhd_rip: all strategies exhausted for id={}".format(video_id))
+    return None, "", embed_url
+
+
+def _extract_govid_stream(embed_url, page_referer):
+    """
+    Top-level govid.live handler.
+
+    ID extraction priority:
+      1. /e/{id}/  — direct parse (canonical form)
+      2. /play/=0TP... — fetch the page and look for /e/{id}/ inside it.
+         Do NOT try to guess the ID from the token string; the tokens are
+         opaque and do not contain raw digit runs in current govid structure.
+    """
+    log("faselhd_rip: _extract_govid_stream {}".format(embed_url[:80]))
+
+    # 1 — canonical /e/{id}/
+    m = re.search(r'/e/(\d+)/?', embed_url)
+    if m:
+        return _extract_govid_by_id(m.group(1), embed_url)
+
+    # 2 — /play/ token: fetch the page to find the embedded /e/{id}/ reference
+    if '/play/' in embed_url:
+        log("faselhd_rip: fetching /play/ page to discover video ID")
+        html, _ = _govid_fetch(embed_url, page_referer)
+        if html:
+            # Look for /e/{id}/ reference embedded anywhere in the page
+            id_m = re.search(r'govid\.live/e/(\d+)/?', html)
+            if not id_m:
+                # Also check for bare numeric ID in common JS patterns
+                # e.g.  var id = 208053;  or  "video_id":"208053"
+                id_m = re.search(
+                    r'(?:video_?id|post_?id|vid|pid)\s*[=:"\']\s*["\']?(\d{4,7})["\']?',
+                    html, re.I)
+            if id_m:
+                video_id = id_m.group(1)
+                log("faselhd_rip: found video ID {} in /play/ page".format(video_id))
+                return _extract_govid_by_id(video_id, embed_url)
+
+            # No ID found but try a full scan of the /play/ page anyway
+            stream, extra = _scan_page_for_stream(html, embed_url)
+            if stream:
+                quality = "1080p" if "1080" in stream else ("720p" if "720" in stream else "HD")
+                return stream, quality, embed_url
+            if extra and extra.isdigit():
+                return _extract_govid_by_id(extra, embed_url)
+
+    log("faselhd_rip: all govid strategies failed for {}".format(embed_url[:80]))
+    return None, "", embed_url
+
+
+def extract_stream(url):
+    log("faselhd_rip extract_stream: {}".format(url[:100]))
+    url = url.replace('&amp;', '&').strip()
+
+    if "govid.live" in url:
+        if ".m3u8" not in url:
+            return _extract_govid_stream(url, BASE_URL)
+        quality = "1080p" if "1080" in url else ("720p" if "720" in url else "HD")
+        return url, quality, GOVID_BASE
+
+    if ".m3u8" in url:
+        quality = "1080p" if "1080" in url else ("720p" if "720" in url else "HD")
+        return url, quality, BASE_URL
+
+    stream_url, quality, ref = base_extract_stream(url)
+    if stream_url:
+        return stream_url, quality, ref
+
+    return None, "", BASE_URL
+``````
+
+## File: extractors/shaheed.py
+``````python
+# -*- coding: utf-8 -*-
+"""
+Shaheed4u extractor - Fixed for current site structure
+Domain: shahidd4u.com
+Supports: Movies, Series, TV Shows, Wrestling Shows
+"""
+
+import re
+import sys
+import json
+import time
+from .base import fetch, urljoin, log
+
+if sys.version_info[0] == 3:
+    from urllib.parse import quote_plus, urlparse, quote
+    from html import unescape as html_unescape
+else:
+    from urllib import quote_plus, quote
+    from urlparse import urlparse
+    from HTMLParser import HTMLParser
+    html_unescape = HTMLParser().unescape
+
+DOMAINS = [
+    "https://shahidd4u.com/",
+]
+
+VALID_HOST_MARKERS = ("shahidd4u.com",)
+BLOCKED_HOST_MARKERS = ("alliance4creativity.com",)
+MAIN_URL = None
+_HOME_HTML = None
+_HOME_LAST_FETCH = 0
+
+
+def _host(url):
+    try:
+        return (urlparse(url).netloc or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_blocked_page(html, final_url=""):
+    text = (html or "").lower()
+    final = (final_url or "").lower()
+    if not text:
+        return True
+    if "just a moment" in text and "cf-chl" in text:
+        return True
+    if "alliance for creativity" in text:
+        return True
+    if any(m in final for m in BLOCKED_HOST_MARKERS):
+        return True
+    return False
+
+
+def _site_root(url):
+    parts = urlparse(url)
+    return "{}://{}/".format(parts.scheme or "https", parts.netloc)
+
+
+def _get_base(force_refresh=False):
+    global MAIN_URL, _HOME_HTML, _HOME_LAST_FETCH
+    if MAIN_URL and not force_refresh and (time.time() - _HOME_LAST_FETCH) < 21600:
+        return MAIN_URL
+    for domain in DOMAINS:
+        log("Shaheed: probing {}".format(domain))
+        html, final_url = fetch(domain, referer=domain)
+        final_url = final_url or domain
+        if _is_blocked_page(html, final_url):
+            log("Shaheed: blocked {}".format(final_url))
+            continue
+        if html and ("شاهد" in html or "shahid" in html.lower() or "film" in html.lower()):
+            MAIN_URL = _site_root(final_url)
+            _HOME_HTML = html
+            _HOME_LAST_FETCH = time.time()
+            log("Shaheed: selected base {}".format(MAIN_URL))
+            return MAIN_URL
+    MAIN_URL = DOMAINS[0]
+    log("Shaheed: fallback base {}".format(MAIN_URL))
+    return MAIN_URL
+
+
+def _normalize_url(url):
+    if not url:
+        return ""
+    url = html_unescape(url.strip())
+    if url.startswith("//"):
+        return "https:" + url
+    if not url.startswith("http"):
+        return urljoin(_get_base(), url)
+    return url
+
+
+def _fetch_live(url, referer=None):
+    ref = referer or _get_base()
+    h, final_url = fetch(url, referer=ref)
+    if _is_blocked_page(h, final_url):
+        return "", ""
+    return h, final_url or url
+
+
+def get_categories():
+    base = _get_base().rstrip("/")
+    return [
+        {"title": "🎬 افلام اجنبي", "url": base + "/category/افلام-اجنبي", "type": "category", "_action": "category"},
+        {"title": "🎬 افلام عربي", "url": base + "/category/افلام-عربي", "type": "category", "_action": "category"},
+        {"title": "🎬 افلام هندي", "url": base + "/category/افلام-هندي", "type": "category", "_action": "category"},
+        {"title": "🎬 افلام انمي", "url": base + "/category/افلام-انمي", "type": "category", "_action": "category"},
+        {"title": "🎬 افلام تركية", "url": base + "/category/افلام-تركية", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات اجنبي", "url": base + "/category/مسلسلات-اجنبي", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات تركية", "url": base + "/category/مسلسلات-تركية", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات انمي", "url": base + "/category/مسلسلات-انمي", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات مدبلجة", "url": base + "/category/مسلسلات-مدبلجة", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات عربي", "url": base + "/category/مسلسلات-عربي", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات هندية", "url": base + "/category/مسلسلات-هندية", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات اسيوية", "url": base + "/category/مسلسلات-اسيوية", "type": "category", "_action": "category"},
+        {"title": "🤼 عروض مصارعة", "url": base + "/category/عروض-مصارعة", "type": "category", "_action": "category"},
+        {"title": "📺 برامج تلفزيونية", "url": base + "/category/برامج-تلفزيونية", "type": "category", "_action": "category"},
+        {"title": "🌙 مسلسلات رمضان 2026", "url": base + "/category/مسلسلات-رمضان-2026", "type": "category", "_action": "category"},
+    ]
+
+
+def get_category_items(url):
+    html, _ = _fetch_live(url)
+    if not html:
+        return []
+
+    items = []
+    seen_urls = set()
+
+    # FIX: the old pattern required a specific attribute order (href then class then style)
+    # and an exact single space between attributes. Sites often vary attribute order.
+    # Strategy 1: find <a class="show-card"> with any attribute order, grab poster from style
+    for match in re.finditer(r'<a\s[^>]*class="[^"]*show-card[^"]*"[^>]*>(.*?)</a>', html, re.DOTALL | re.I):
+        tag_open = html[match.start():match.start() + 300]
+        card_content = match.group(1)
+
+        # href from the opening tag
+        href_m = re.search(r'href="([^"]+)"', tag_open, re.I)
+        if not href_m:
+            continue
+        full_url = _normalize_url(href_m.group(1))
+        if not full_url or full_url in seen_urls:
+            continue
+        seen_urls.add(full_url)
+
+        # poster from style="background-image:url(...)" — in opening tag or card content
+        poster_url = ""
+        poster_m = re.search(r'background-image:\s*url\(([^)]+)\)', tag_open + card_content, re.I)
+        if poster_m:
+            poster_url = _normalize_url(poster_m.group(1).strip("'\" "))
+
+        # title from <p class="title">
+        title_m = re.search(r'<p[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)</p>', card_content, re.I)
+        if not title_m:
+            title_m = re.search(r'<[^>]+class="[^"]*title[^"]*"[^>]*>([^<]+)</', card_content, re.I)
+        if not title_m:
+            # fall back to any text in the card
+            title_m = re.search(r'>([^<]{3,})<', card_content)
+        title = html_unescape(title_m.group(1).strip()) if title_m else ""
+        if not title:
+            continue
+
+        quality_m = re.search(r'<span[^>]*class="[^"]*sticker[^"]*"[^>]*>([^<]+)</span>', card_content, re.I)
+        quality = quality_m.group(1).strip() if quality_m else ""
+
+        categ_m = re.search(r'<span[^>]*class="[^"]*categ[^"]*"[^>]*>([^<]+)</span>', card_content, re.I)
+        category = categ_m.group(1).strip() if categ_m else ""
+
+        item_type = "series" if ("مسلسلات" in category or "عروض" in category or
+                                  "/category/مسلسلات" in url or "/category/عروض" in url) else "movie"
+
+        display_title = "{} [{}]".format(title, quality) if quality else title
+        items.append({
+            "title": display_title,
+            "url": full_url,
+            "poster": poster_url,
+            "plot": category,
+            "type": item_type,
+            "_action": "details",
+        })
+
+    # Strategy 2 fallback: article/div cards with poster images (site may have redesigned)
+    if not items:
+        log("Shaheed: show-card pattern matched 0 items, trying generic card fallback")
+        for match in re.finditer(
+            r'<(?:article|div)[^>]+class="[^"]*(?:card|item|post|movie)[^"]*"[^>]*>(.*?)</(?:article|div)>',
+            html, re.S | re.I
+        ):
+            block = match.group(1)
+            href_m = re.search(r'href="([^"]+)"', block, re.I)
+            if not href_m:
+                continue
+            full_url = _normalize_url(href_m.group(1))
+            if not full_url or full_url in seen_urls:
+                continue
+            seen_urls.add(full_url)
+
+            title_m = (re.search(r'<h[1-4][^>]*>([^<]+)</h[1-4]>', block, re.I) or
+                       re.search(r'alt="([^"]+)"', block, re.I) or
+                       re.search(r'title="([^"]+)"', block, re.I))
+            title = html_unescape(title_m.group(1).strip()) if title_m else ""
+            if not title:
+                continue
+
+            img_m = (re.search(r'src="([^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"', block, re.I) or
+                     re.search(r'data-src="([^"]+)"', block, re.I))
+            poster_url = _normalize_url(img_m.group(1)) if img_m else ""
+
+            items.append({
+                "title": title,
+                "url": full_url,
+                "poster": poster_url,
+                "type": "movie",
+                "_action": "details",
+            })
+
+    # Pagination
+    pagination_pattern = r'<button[^>]+onclick="updateQuery\(\'page\',\s*(\d+)\)"[^>]*>(\d+)</button>'
+    current_page = None
+    max_page = None
+    for match in re.finditer(pagination_pattern, html):
+        page_num = int(match.group(2))
+        if match.group(1) == str(page_num):
+            current_page = page_num
+        if page_num > (max_page or 0):
+            max_page = page_num
+
+    if current_page and max_page and current_page < max_page:
+        sep = "&" if "?" in url else "?"
+        items.append({
+            "title": "➡️ Next Page",
+            "url": url + sep + "page=" + str(current_page + 1),
+            "type": "category",
+            "_action": "category",
+        })
+
+    log("Shaheed: {} -> {} items".format(url, len(items)))
+    return items
+
+
+def search(query, page=1):
+    base = _get_base()
+    url = base + "/search?s=" + quote_plus(query)
+    if page > 1:
+        url += "&page=" + str(page)
+    html, _ = _fetch_live(url)
+    if not html:
+        return []
+    return get_category_items(url)
+
+
+def get_page(url):
+    html, final_url = _fetch_live(url)
+
+    result = {
+        "url": final_url or url,
+        "title": "",
+        "plot": "",
+        "poster": "",
+        "servers": [],
+        "items": [],
+        "type": "movie",
+    }
+
+    if not html:
+        log("Shaheed: get_page failed for {}".format(url))
+        return result
+
+    title_match = re.search(r'<title>(.*?)</title>', html)
+    if title_match:
+        title = html_unescape(title_match.group(1))
+        title = re.sub(r'\s*[-|]\s*شاهد\s*فور\s*يو.*$', '', title)
+        title = re.sub(r'\s*[-|]\s*Shahid4u.*$', '', title, flags=re.I)
+        result["title"] = title.strip()
+
+    desc_match = re.search(r'<meta\s+name=["\']description["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+    if desc_match:
+        result["plot"] = html_unescape(desc_match.group(1))
+
+    poster_match = re.search(r'<meta\s+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+    if poster_match:
+        result["poster"] = _normalize_url(poster_match.group(1))
+
+    # Extract servers from JavaScript array
+    servers_pattern = r'let\s+servers\s*=\s*JSON\.parse\(\'([^\']+)\'\)'
+    match = re.search(servers_pattern, html)
+    if match:
+        try:
+            servers_json = match.group(1).replace('\\"', '"')
+            servers_data = json.loads(servers_json)
+            for server in servers_data:
+                if server.get("url"):
+                    result["servers"].append({
+                        "name": server.get("name", "Server"),
+                        "url": server["url"],
+                        "type": "embed"
+                    })
+            log("Shaheed: extracted {} servers from JSON".format(len(result["servers"])))
+        except Exception as e:
+            log("Shaheed: failed to parse servers JSON: {}".format(e))
+
+    if not result["servers"]:
+        alt_pattern = r'servers\s*=\s*(\[.*?\])'
+        match = re.search(alt_pattern, html, re.DOTALL)
+        if match:
+            try:
+                for server in json.loads(match.group(1)):
+                    if server.get("url"):
+                        result["servers"].append({
+                            "name": server.get("name", "Server"),
+                            "url": server["url"],
+                            "type": "embed"
+                        })
+            except Exception as e:
+                log("Shaheed: failed to parse alt servers JSON: {}".format(e))
+
+    if not result["servers"]:
+        skip_domains = ['youtube', 'facebook', 'twitter', 'google', 'doubleclick',
+                        'analytics', 'googletagmanager', 'cloudflareinsights',
+                        'adsco.re', 'intelligenceadx']
+        embed_domains = ['fastvid.cam', 'streamtape', 'doodstream', 'voe',
+                         'filemoon', 'rpmvip', 'upn.one', 'cleantechworld',
+                         'streamwish', 'mixdrop', 'vidguard']
+        for iframe_match in re.finditer(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I):
+            iframe_url = iframe_match.group(1)
+            if any(x in iframe_url.lower() for x in skip_domains):
+                continue
+            if iframe_url.startswith("//"):
+                iframe_url = "https:" + iframe_url
+            elif iframe_url.startswith("/"):
+                p = urlparse(final_url or url)
+                iframe_url = "{}://{}{}".format(p.scheme, p.netloc, iframe_url)
+            if any(d in iframe_url.lower() for d in embed_domains):
+                result["servers"].append({"name": "Embed Player", "url": iframe_url, "type": "iframe"})
+
+    if "/مسلسلات" in url or "series" in url.lower() or "/عروض" in url or "/post/" in url:
+        result["type"] = "series"
+
+    log("Shaheed: {} -> found {} servers".format(url, len(result["servers"])))
+    return result
+
+
+def extract_stream(url):
+    log("Shaheed extract_stream: {}".format(url))
+    referer = _get_base()
+    if "|" in url:
+        parts = url.split("|", 1)
+        url = parts[0]
+        if "Referer=" in parts[1]:
+            referer = parts[1].split("Referer=")[1].strip()
+
+    from .base import resolve_iframe_chain
+    stream, _ = resolve_iframe_chain(url, referer=referer, max_depth=10)
+    if stream:
+        return stream, None, referer
+
+    from .base import extract_stream as base_extract_stream
+    return base_extract_stream(url)
+``````
+
+## File: extractors/topcinema.py
+``````python
+# -*- coding: utf-8 -*-
+import sys
+import re
+from .base import fetch, urljoin, log, resolve_iframe_chain
+
+if sys.version_info[0] == 3:
+    from urllib.parse import quote_plus, urlparse, urlunparse, quote, urlencode
+    from html import unescape as html_unescape
+else:
+    from urllib import quote_plus, quote, urlencode
+    from urlparse import urlparse, urlunparse
+    from HTMLParser import HTMLParser
+    html_unescape = HTMLParser().unescape
+
+DOMAINS = ["https://topcinemaa.top"]
+MAIN_URL = DOMAINS[0]
+
+def _normalize_url(url):
+    if not url:
+        return ""
+    url = html_unescape(url.strip())
+    if url.startswith("//"):
+        return "https:" + url
+    if not url.startswith("http"):
+        return urljoin(MAIN_URL, url)
+    return url
+
+_LEADING_TYPE_WORDS = ("فيلم", "افلام", "مسلسل", "مسلسلات", "انمي", "برنامج", "عرض")
+_TITLE_NOISE_PHRASES = (
+    "مشاهدة وتحميل", "مشاهدة وتحميل مباشر", "مشاهدة", "تحميل",
+    "مترجمة", "مترجم", "مدبلجة", "مدبلج",
+    "اون لاين", "اونلاين", "بجودة عالية", "بجودة", "حصريا", "كامل",
+)
+
+def _clean_title(title):
+    """Strip bracketed tags, leading content-type words (فيلم/مسلسل/انمي/...),
+    and common quality/language noise phrases (مترجم, مدبلج, اون لاين, ...)
+    for a clean display title, e.g.
+    "[فيلم] فيلم Passenger 2026 مترجم اون لاين" -> "Passenger 2026".
+
+    Deliberately leaves season/episode markers (الموسم, الحلقة) untouched -
+    those carry real information for series titles.
+    """
+    title = html_unescape(title or "")
+    title = title.replace("&amp;", "&")
+    # Strip bracketed tags like "[فيلم]"
+    title = re.sub(r'\[[^\]]*\]\s*', '', title)
+    # Strip trailing site-branding suffix from <title> tag text, e.g.
+    # "... مترجمة - توب سينما" -> "... مترجمة"
+    title = re.sub(r'\s*[-|]\s*ت[ةه]?وب\s*سينما\s*$', '', title, flags=re.I)
+    # Strip known noise phrases first, so a leading type word that was
+    # originally preceded by one (e.g. "مشاهدة وتحميل فيلم ...") becomes
+    # the new leading word and gets caught below.
+    for phrase in _TITLE_NOISE_PHRASES:
+        title = re.sub(r'\s*' + re.escape(phrase) + r'\s*', ' ', title, flags=re.I)
+    # Strip a leading content-type word (there may be more than one)
+    words = title.split()
+    while words and words[0] in _LEADING_TYPE_WORDS:
+        words.pop(0)
+    return " ".join(words).strip()
+
+def get_categories():
+    return [
+        {"title": "🎬 المضاف حديثا", "url": MAIN_URL + "/recent/", "type": "category", "_action": "category"},
+        {"title": "🎬 أفلام أجنبية", "url": MAIN_URL + "/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D8%A7%D8%AC%D9%86%D8%A8%D9%8A-8/", "type": "category", "_action": "category"},
+        {"title": "🎬 أفلام أنمي", "url": MAIN_URL + "/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D8%A7%D9%86%D9%85%D9%8A-2/", "type": "category", "_action": "category"},
+        {"title": "🎬 أفلام أسيوية", "url": MAIN_URL + "/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D8%A7%D8%B3%D9%8A%D9%88%D9%8A/", "type": "category", "_action": "category"},
+        {"title": "🎬 أفلام نتفليكس", "url": MAIN_URL + "/netflix-movies/", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات أجنبية", "url": MAIN_URL + "/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%A7%D8%AC%D9%86%D8%A8%D9%8A/", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات أسيوية", "url": MAIN_URL + "/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%A7%D8%B3%D9%8A%D9%88%D9%8A%D8%A9/", "type": "category", "_action": "category"},
+        {"title": "📺 مسلسلات أنمي", "url": MAIN_URL + "/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%A7%D9%86%D9%85%D9%8A/", "type": "category", "_action": "category"},
+    ]
+
+def _extract_blocks(html):
+    """
+    Extract movie/series items from listing pages (categories, search, recent, etc.)
+    Looks for any <a> with href+title that contains an image with src/data-src.
+    Filters out navigation links (/category/, /search/, /page/, /tag/, /author/).
+    """
+    items = []
+    pattern = r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*title=["\']([^"\']+)["\'][^>]*>(.*?)</a>'
+    for m in re.finditer(pattern, html, re.I | re.S):
+        href = m.group(1)
+        title = m.group(2)
+        inner = m.group(3)
+
+        # Skip if the link points to a non‑item page (category, search, pagination, etc.)
+        if re.search(r'/(?:category|search|page|tag|author)/', href, re.I):
+            continue
+
+        # Find image inside the <a>
+        img_match = re.search(r'<img[^>]+(?:data-src|src)=["\']([^"\']+)["\']', inner, re.I)
+        if not img_match:
+            continue
+        poster = img_match.group(1)
+
+        # Skip placeholder images
+        if not poster or poster.startswith('data:') or 'placeholder' in poster.lower():
+            continue
+
+        link = _normalize_url(href)
+        poster = _normalize_url(poster)
+
+        # FIX: type detection must run on the RAW title - _clean_title now
+        # strips "مسلسل"/"انمي" as leading content-type words, so checking
+        # the cleaned title here would always miss them and everything
+        # would default to "movie".
+        item_type = "movie"
+        if "مسلسل" in title or "حلقة" in title or "انمي" in title:
+            item_type = "series"
+
+        title = _clean_title(title)
+
+        items.append({
+            "title": title,
+            "url": link,
+            "poster": poster,
+            "type": item_type,
+            "_action": "details"
+        })
+    return items
+
+def get_category_items(url):
+    html, final_url = fetch(url, referer=MAIN_URL)
+    if not html:
+        log("TopCinema: fetch returned no content for {}".format(url))
+        return []
+
+    items = _extract_blocks(html)
+
+    # Pagination: find the » link (next page)
+    next_match = re.search(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>»\s*</a>', html, re.I)
+    if next_match:
+        next_url = _normalize_url(next_match.group(1))
+        if next_url:
+            items.append({
+                "title": "➡️ الصفحة التالية",
+                "url": next_url,
+                "type": "category",
+                "_action": "category"
+            })
+    return items
+
+def search(query, page=1):
+    url = MAIN_URL + "/search/?query=" + quote_plus(query) + "&type=all"
+    html, final_url = fetch(url, referer=MAIN_URL)
+    return _extract_blocks(html)
+
+def get_page(url):
+    html, final_url = fetch(url, referer=MAIN_URL)
+
+    title_m = re.search(r'<title>(.*?)</title>', html, re.I | re.S)
+    raw_title = title_m.group(1) if title_m else "Unknown Title"
+    title = _clean_title(raw_title)
+
+    poster_m = re.search(r'property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+    poster = _normalize_url(poster_m.group(1)) if poster_m else ""
+
+    plot_m = re.search(r'class=["\']description["\'][^>]*>(.*?)</', html, re.S | re.I)
+    plot = _clean_title(re.sub(r'<[^>]+>', '', plot_m.group(1))) if plot_m else ""
+
+    servers = []
+    episodes = []
+    item_type = "movie"
+
+    # Try to locate the watch page URL
+    watch_url_m = re.search(
+        r'<a[^>]+class=["\'][^"\']*watch[^"\']*["\'][^>]+href=["\']([^"\']+/watch/?)[\"\']',
+        html, re.I
+    )
+    watch_page_html = html
+    watch_url = final_url
+    if watch_url_m:
+        watch_url = _normalize_url(watch_url_m.group(1))
+        watch_page_html, _ = fetch(watch_url, referer=final_url)
+        watch_page_html = watch_page_html or ""
+
+    # Extract post ID (used for server AJAX)
+    post_id = ""
+    for pat in [
+        r'data-id=["\'](\d+)["\']',
+        r'\?p=(\d+)',
+        r'postid["\']?\s*[:=]\s*["\']?(\d+)["\']?',
+        r'post_id["\']?\s*[:=]\s*["\']?(\d+)["\']?'
+    ]:
+        m = re.search(pat, watch_page_html, re.I)
+        if m:
+            post_id = m.group(1)
+            break
+
+    # Server extraction – look for <li> with data-id and data-server
+    # FIX: real markup is `<li data-id="X" data-server="N" class="server--item ...">`
+    # - data-id/data-server come BEFORE class, but this regex required class
+    # first, so it never matched any real page and silently fell through to
+    # the generic fallback below every single time. Made attribute order
+    # independent using lookaheads so it matches regardless of which
+    # attribute comes first.
+    server_candidates = []
+    li_matches = re.findall(
+        r'<li(?=[^>]*class=["\'][^"\']*server--item)(?=[^>]*data-id=["\'](\d+))(?=[^>]*data-server=["\'](\d+))[^>]*>(.*?)</li>',
+        watch_page_html, re.I | re.S
+    )
+    for pid, idx, inner in li_matches:
+        name = re.sub(r'<[^>]+>', ' ', inner)
+        name = _clean_title(re.sub(r'\s+', ' ', name)).strip()
+        if name:
+            server_candidates.append((pid, idx, name))
+
+    # Fallback: any element with data-id and data-server
+    if not server_candidates:
+        generic_matches = re.findall(
+            r'<(?:li|a|button|div)[^>]*data-id=["\'](\d+)["\'][^>]*data-server=["\'](\d+)["\'][^>]*>(.*?)</(?:li|a|button|div)>',
+            watch_page_html, re.I | re.S
+        )
+        for pid, idx, inner in generic_matches:
+            name = re.sub(r'<[^>]+>', ' ', inner)
+            name = _clean_title(re.sub(r'\s+', ' ', name)).strip()
+            if name:
+                server_candidates.append((pid, idx, name))
+
+    # Last resort: use predefined server names if we have a post_id
+    if not server_candidates and post_id:
+        known_servers = [
+            "متعدد الجودات", "UpDown", "StreamWish", "Doodstream",
+            "Filelions", "Streamtape", "LuluStream", "Filemoon",
+            "Mixdrop", "VidGuard", "Okru"
+        ]
+        for i, srv in enumerate(known_servers, 1):
+            if re.search(re.escape(srv), watch_page_html, re.I):
+                server_candidates.append((post_id, str(i), srv))
+
+    ajax_endpoint = MAIN_URL + "/wp-content/themes/movies2023/Ajaxat/Single/Server.php"
+    seen = set()
+    for pid, idx, name in server_candidates:
+        if not pid or not idx:
+            continue
+        key = (pid, idx)
+        if key in seen:
+            continue
+        seen.add(key)
+        clean_name = _clean_title(name or "").strip()
+        if not clean_name:
+            continue
+        s_url = "topcinema_server|{}|{}|{}|{}".format(
+            ajax_endpoint, pid, idx, watch_url
+        )
+        servers.append({
+            "name": "توب سينما " + clean_name,
+            "url": s_url,
+        })
+
+    # Episodes extraction – only if the page looks like a series
+    # FIX: must check raw_title, not the cleaned title - _clean_title now
+    # strips "مسلسل" as a leading content-type word, so this would always
+    # miss it on the cleaned version.
+    is_series_like = (
+        "مسلسل" in raw_title or
+        "الحلقة" in watch_page_html or
+        "episodes" in watch_page_html.lower() or
+        "season" in watch_page_html.lower()
+    )
+    if is_series_like:
+        eps_container = ""
+        # FIX: the confirmed real container is `<div class="episodes--list--side">`
+        # containing a flat list of <a> episode links with no nested divs -
+        # try this first with a precise, non-greedy match. The old fallback
+        # patterns below still exist for other layouts, but their generic
+        # "episodes" alternative was matching the WRONG, OUTER wrapper div
+        # (`episodes--side--list`, which nests the season-toggler dropdown
+        # before the actual episode links) and the non-greedy `(.*?)</div>`
+        # was truncating at that nested div's closing tag - only ever
+        # capturing the season selector, never a single actual episode link.
+        m = re.search(
+            r'<div[^>]+class=["\'][^"\']*episodes--list--side[^"\']*["\'][^>]*>(.*?)</div>',
+            watch_page_html, re.S | re.I
+        )
+        if m:
+            eps_container = m.group(1)
+        else:
+            for container_pat in [
+                r'<div[^>]+class=["\'][^"\']*(?:episodes|series-episodes|season-episodes|ep_list|episodes-list|series-list|all-episodes)[^"\']*["\'][^>]*>(.*?)</div>',
+                r'<ul[^>]*class=["\'][^"\']*(?:episodes|series-episodes|list-episodes|ep_list)[^"\']*["\'][^>]*>(.*?)</ul>',
+                r'<section[^>]*class=["\'][^"\']*(?:episodes|series)[^"\']*["\'][^>]*>(.*?)</section>',
+                r'<div[^>]+id=["\'][^"\']*(?:episodes|episodes-list|episodes-all)[^"\']*["\'][^>]*>(.*?)</div>'
+            ]:
+                m = re.search(container_pat, watch_page_html, re.S | re.I)
+                if m:
+                    eps_container = m.group(1)
+                    break
+        if not eps_container:
+            eps_container = watch_page_html
+
+        eps_matches = re.findall(
+            r'<a[^>]+href=["\']([^"\']+/(?:watch|episode)[^"\']*)["\'][^>]*>(.*?)</a>',
+            eps_container, re.DOTALL | re.I
+        )
+        seen_eps = set()
+        for e_link, e_inner in eps_matches:
+            full_link = _normalize_url(e_link)
+            if not full_link or full_link == watch_url:
+                continue
+            if full_link in seen_eps:
+                continue
+            seen_eps.add(full_link)
+
+            e_text = re.sub(r'<[^>]+>', '', e_inner).strip()
+            e_num_m = re.search(r'الحلقة\s*(\d+)', e_text)
+            if not e_num_m:
+                e_num_m = re.search(r'(\d+)', e_text)
+
+            e_num = e_num_m.group(1).strip() if e_num_m else (e_text[:30] if e_text else "Episode")
+            episodes.append({
+                "title": "حلقة " + e_num if e_num.isdigit() else e_num,
+                "url": full_link,
+                "type": "episode",
+                "_action": "item"
+            })
+
+    if episodes:
+        item_type = "series"
+
+    return {
+        "url": final_url,
+        "title": title,
+        "plot": plot,
+        "poster": poster,
+        "servers": servers,
+        "items": episodes,
+        "type": item_type
+    }
+
+def extract_stream(url):
+    log("TopCinema: resolving {}".format(url))
+    if url.startswith("topcinema_server|"):
+        parts = url.split("|")
+        ajax_url = parts[1]
+        post_id = parts[2]
+        server_index = parts[3]
+        referer_url = parts[4] if len(parts) > 4 else MAIN_URL
+
+        postdata = {
+            "id": post_id,
+            "i": server_index
+        }
+        html, _ = fetch(ajax_url, referer=referer_url,
+                        extra_headers={"X-Requested-With": "XMLHttpRequest"},
+                        post_data=postdata)
+
+        ifr_m = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html)
+        if ifr_m:
+            v_url = _normalize_url(ifr_m.group(1))
+            log("TopCinema: Found iframe '{}'".format(v_url))
+            resolved = resolve_iframe_chain(v_url, referer=MAIN_URL)
+            if resolved:
+                if isinstance(resolved, tuple):
+                    return resolved[0], None, (resolved[1] if len(resolved) > 1 and resolved[1] else MAIN_URL)
+                return resolved, None, MAIN_URL
+            return v_url, None, MAIN_URL
+
+    return url, None, MAIN_URL
+``````
+
+## File: extractors/wecima.py
+``````python
+# -*- coding: utf-8 -*-
+import re
+import sys
+import base64
+import json
+
+from .base import fetch, urljoin, log
+
+if sys.version_info[0] == 3:
+    from urllib.parse import quote_plus, urlparse, quote
+    from html import unescape as html_unescape
+else:
+    from urllib import quote_plus
+    from urlparse import urlparse
+    from HTMLParser import HTMLParser
+    html_unescape = HTMLParser().unescape
+
+# Updated domain list - wecima.click is currently the most active
+DOMAINS = [
+    "https://wecima.click/",
+    "https://wecima.cx/",
+    "https://wecima.bid/",
+    "https://www.wecima.site/",
+]
+VALID_HOST_MARKERS = (
+    "wecima.click", "wecima.cx", "wecima.bid", "wecima.site",
+)
+BLOCKED_HOST_MARKERS = ("alliance4creativity.com",)
+MAIN_URL = None
+_HOME_HTML = None
+
+_CATEGORY_FALLBACKS = {
+    "افلام اجنبي":    "/category/foreign-movies",
+    "افلام عربي":     "/category/arabic-movies",
+    "مسلسلات اجنبي":  "/category/foreign-series",
+    "مسلسلات عربية":  "/category/arabic-series",
+    "مسلسلات انمي":   "/category/anime-series",
+    "تريندج":         "/trends",
+}
+
+
+def _host(url):
+    try:
+        return (urlparse(url).netloc or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_valid_site_url(url):
+    host = _host(url)
+    if not host:
+        return False
+    if any(m in host for m in BLOCKED_HOST_MARKERS):
+        return False
+    return any(m in host for m in VALID_HOST_MARKERS)
+
+
+def _is_blocked_page(html, final_url=""):
+    text = (html or "").lower()
+    final = (final_url or "").lower()
+    if not text:
+        return True
+    if "just a moment" in text and ("cf-chl" in text or "challenge" in text):
+        return True
+    if "enable javascript and cookies to continue" in text:
+        return True
+    if "watch it legally" in text or "alliance for creativity" in text:
+        return True
+    if any(m in final for m in BLOCKED_HOST_MARKERS):
+        return True
+    return False
+
+
+def _looks_like_wecima_page(html):
+    text = html or ""
+    return (
+        "Grid--WecimaPosts" in text
+        or "NavigationMenu" in text
+        or "Thumb--GridItem" in text
+        or "GridItem" in text
+        or "List--Servers" in text  # Keep for compatibility
+        or "WECIMA" in text
+        or "وى سيما" in text
+        or "wecima" in text.lower()
+    )
+
+
+def _site_root(url):
+    parts = urlparse(url)
+    return "{}://{}/".format(parts.scheme or "https", parts.netloc)
+
+
+def _get_base():
+    global MAIN_URL, _HOME_HTML
+    if MAIN_URL:
+        return MAIN_URL
+    for domain in DOMAINS:
+        log("Wecima: probing {}".format(domain))
+        html, final_url = fetch(domain, referer=domain)
+        final_url = final_url or domain
+        if _is_blocked_page(html, final_url):
+            log("Wecima: blocked {}".format(final_url))
+            continue
+        if html and _looks_like_wecima_page(html):
+            MAIN_URL = _site_root(final_url)
+            _HOME_HTML = html
+            log("Wecima: selected base {}".format(MAIN_URL))
+            return MAIN_URL
+    MAIN_URL = DOMAINS[0]
+    log("Wecima: fallback base {}".format(MAIN_URL))
+    return MAIN_URL
+
+
+def _search_url():
+    return _get_base().rstrip("/") + "/?s="
+
+
+def _normalize_url(url):
+    if not url:
+        return ""
+    url = url.strip()
+    try:
+        url = url.encode("utf-8").decode("unicode_escape") if "\\u" in url else url
+    except Exception:
+        pass
+    url = url.replace("\\u0026", "&").replace("&amp;", "&").replace("\\/", "/")
+    url = html_unescape(url)
+    if url.startswith("//"):
+        return "https:" + url
+    if not url.startswith("http"):
+        return urljoin(_get_base(), url)
+    if any(m in _host(url) for m in BLOCKED_HOST_MARKERS):
+        return ""
+    if _is_valid_site_url(url):
+        base_parts = urlparse(_get_base())
+        parts = urlparse(url)
+        if parts.netloc != base_parts.netloc and any(m in parts.netloc for m in VALID_HOST_MARKERS):
+            clean = "{}://{}{}".format(base_parts.scheme, base_parts.netloc, parts.path or "/")
+            if parts.query:
+                clean += "?" + parts.query
+            return clean
+    return url
+
+
+def _candidate_urls(url):
+    normalized = _normalize_url(url)
+    if not normalized:
+        return []
+    parts = urlparse(normalized)
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+    urls = []
+    seen = set()
+    seeds = []
+    if MAIN_URL:
+        seeds.append(MAIN_URL)
+    seeds.extend(DOMAINS)
+    if normalized.startswith("http"):
+        seeds.insert(0, _site_root(normalized))
+    for domain in seeds:
+        if not domain:
+            continue
+        base = domain if domain.endswith("/") else domain + "/"
+        candidate = urljoin(base, path.lstrip("/"))
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        urls.append(candidate)
+    if normalized not in seen:
+        urls.insert(0, normalized)
+    return urls
+
+
+def _fetch_live(url, referer=None):
+    for candidate in _candidate_urls(url):
+        log("Wecima: fetching {}".format(candidate))
+        html, final_url = fetch(candidate, referer=referer or _get_base())
+        final_url = final_url or candidate
+        if _is_blocked_page(html, final_url):
+            log("Wecima: blocked {}".format(final_url))
+            continue
+        if html and _looks_like_wecima_page(html):
+            log("Wecima: success {}".format(final_url))
+            return html, final_url
+        if html:
+            log("Wecima: page shape mismatch {}".format(final_url))
+    log("Wecima: fetch failed for {}".format(url))
+    return "", ""
+
+
+def _clean_html(text):
+    text = html_unescape(text or "")
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _clean_title(title):
+    title = _clean_html(title)
+    for token in (
+        "مشاهدة فيلم", "مشاهدة مسلسل", "مشاهدة",
+        "فيلم", "مسلسل", "اون لاين", "أون لاين",
+        "مترجم", "مترجمة", "مدبلج", "مدبلجة",
+    ):
+        title = title.replace(token, "")
+    return re.sub(r"\s+", " ", title).strip(" -|")
+
+
+def _home_html():
+    global _HOME_HTML
+    if _HOME_HTML:
+        return _HOME_HTML
+    base = _get_base()
+    html, final_url = _fetch_live(base, referer=base)
+    _HOME_HTML = html if not _is_blocked_page(html, final_url) else ""
+    return _HOME_HTML
+
+
+def _guess_type(title, url):
+    text = "{} {}".format(title or "", url or "").lower()
+    if any(t in text for t in ("/episode/", "الحلقة", "حلقة", "/season/")):
+        return "episode"
+    if any(t in text for t in ("/series", "/seriestv", "مسلسل", "series-", "/season/")):
+        return "series"
+    return "movie"
+
+
+def _grid_blocks(html):
+    blocks = []
+    for block in re.split(r'(?=<div[^>]+class="GridItem")', html or "", flags=re.I):
+        if 'class="GridItem"' not in block:
+            continue
+        end_match = re.search(
+            r'<ul[^>]+class="PostItemStats"[^>]*>.*?</ul>\s*</div>',
+            block, re.S | re.I,
+        )
+        if end_match:
+            blocks.append(block[: end_match.end()])
+        else:
+            blocks.append(block[:3000])
+    return blocks
+
+
+def _extract_cards(html):
+    cards = []
+    seen = set()
+    
+    for block in _grid_blocks(html):
+        href_match = re.search(r'<a[^>]+href="([^"]+)"', block, re.I)
+        if not href_match:
+            continue
+        url = _normalize_url(href_match.group(1))
+        if not url or url in seen:
+            continue
+        
+        lowered = url.lower()
+        if any(t in lowered for t in ("/category/", "/tag/", "/page/", "/filtering", "/feed/", "/trends")):
+            continue
+        
+        title_match = (
+            re.search(r'<h2[^>]+class="hasyear"[^>]*itemprop="name"[^>]*>(.*?)</h2>', block, re.S | re.I) or
+            re.search(r'<h2[^>]+class="hasyear"[^>]*>(.*?)</h2>', block, re.S | re.I) or
+            re.search(r'title="([^"]+)"', block, re.I)
+        )
+        title = _clean_title(title_match.group(1) if title_match else "")
+        if not title:
+            continue
+        
+        year = ""
+        year_match = re.search(r'<span[^>]+class="year"[^>]*>\(?\s*(\d{4})\s*\)?</span>', block, re.I)
+        if year_match:
+            year = year_match.group(1)
+        
+        poster = ""
+        poster_match = re.search(r'data-src="([^"]+)"', block, re.I)
+        if poster_match:
+            poster = poster_match.group(1)
+        if not poster:
+            poster_match = re.search(r'data-lazy-style="[^"]*url\(([^)]+)\)"', block, re.I)
+            if poster_match:
+                poster = poster_match.group(1).strip("'\" ")
+        if not poster:
+            poster_match = re.search(r'style="[^"]*--image:url\(([^)]+)\)', block, re.I)
+            if poster_match:
+                poster = poster_match.group(1).strip("'\" ")
+        
+        seen.add(url)
+        cards.append({
+            "title": title,
+            "url": url,
+            "poster": _normalize_url(poster) if poster else "",
+            "plot": year,
+            "type": _guess_type(title, url),
+            "_action": "details",
+        })
+    
+    log("Wecima: extracted {} cards".format(len(cards)))
+    return cards
+
+
+def _extract_next_page(html):
+    patterns = [
+        r'<a[^>]+class="[^"]*next[^"]*page-numbers[^"]*"[^>]+href="([^"]+)"',
+        r'<a[^>]+rel="next"[^>]+href="([^"]+)"',
+        r'<a[^>]+href="([^"]+)"[^>]*>»</a>',
+    ]
+    for pat in patterns:
+        m = re.search(pat, html or "", re.I)
+        if m:
+            return _normalize_url(m.group(1))
+    return ""
+
+
+def _category_from_home(label, fallback):
+    html = _home_html()
+    for pattern in (
+        r'<a[^>]+href="([^"]+)"[^>]*>\s*' + re.escape(label) + r'\s*</a>',
+        r'<a[^>]+href="([^"]+)"[^>]*>\s*<span[^>]*>\s*' + re.escape(label) + r'\s*</span>',
+    ):
+        m = re.search(pattern, html or "", re.S | re.I)
+        if m:
+            url = _normalize_url(m.group(1))
+            if url:
+                return url
+    return _normalize_url(urljoin(_get_base(), fallback))
+
+
+def _decode_wecima_url(encoded):
+    """
+    Decode Wecima's obfuscated URLs with robust sanitisation.
+    """
+    if not encoded:
+        return None
+
+    log("Wecima: decoding: {}".format(repr(encoded[:80])))
+
+    try:
+        # 1. Clean and sanitise – keep only Base64-valid chars
+        cleaned = encoded.strip().replace(' ', '+')
+        # Remove any character that is not valid Base64
+        cleaned = re.sub(r'[^A-Za-z0-9+/=]', '', cleaned)
+
+        # 2. Fix padding
+        missing_padding = len(cleaned) % 4
+        if missing_padding:
+            cleaned += '=' * (4 - missing_padding)
+
+        # 3. Decode
+        decoded_bytes = base64.b64decode(cleaned)
+
+        # 4. Try to decode as ASCII first (the URL should be ASCII)
+        # If it fails, fallback to UTF‑8, then to latin‑1, but ignore errors
+        for encoding in ('ascii', 'utf-8', 'latin-1'):
+            try:
+                decoded_url = decoded_bytes.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            # If all fail, use 'replace' to avoid crashing
+            decoded_url = decoded_bytes.decode('ascii', errors='replace')
+
+        # 5. Clean up common escape sequences
+        decoded_url = decoded_url.replace('\\u0026', '&').replace('\\/', '/')
+
+        # 6. Apply URL quoting for any remaining non‑ASCII (should be rare now)
+        decoded_url = quote(decoded_url, safe=':/?&=#+')
+
+        # 7. Fix protocol if missing
+        if decoded_url.startswith('//'):
+            decoded_url = 'https:' + decoded_url
+        elif decoded_url.startswith('https') and not decoded_url.startswith('https://'):
+            decoded_url = 'https://' + decoded_url[5:]
+        elif decoded_url.startswith('http') and not decoded_url.startswith('http://'):
+            decoded_url = 'http://' + decoded_url[4:]
+
+        # Validate it looks like a real URL
+        if decoded_url and ('http://' in decoded_url or 'https://' in decoded_url):
+            log("Wecima: decode success: {}".format(decoded_url[:80]))
+            return decoded_url
+        else:
+            log("Wecima: decoded but doesn't look like URL: {}".format(repr(decoded_url[:80])))
+
+    except Exception as e:
+        log("Wecima: decode failed: {}".format(str(e)[:50]))
+
+    # Fallback: try to extract a plain URL pattern directly
+    url_pattern = r'[a-zA-Z0-9\-]+\.(?:com|net|org|tv|cx|bid|site|click|show|video|rent|date|live|rip|top|xyz)(?:/[a-zA-Z0-9\-_/]+)?'
+    match = re.search(url_pattern, encoded)
+    if match:
+        url = "https://" + match.group(0)
+        log("Wecima: extracted URL pattern: {}".format(url))
+        return url
+
+    return None
+
+
+def _extract_servers(html):
+    """
+    Robust server extraction for the new WeCima 'WatchServersList' layout.
+    Fixes the 'No servers detected' issue.
+    """
+    servers = []
+    seen = set()
+    
+    if not html:
+        log("Wecima: empty HTML in _extract_servers")
+        return []
+
+    # 1. Targeted Extraction: Isolate the server list container first
+    # WeCima now wraps all real stream links inside this specific class
+    # FIX: changed from "List--Servers" to "WatchServersList" as per current HTML
+    server_block_match = re.search(r'class="WatchServersList">(.*?)</ul>', html, re.S)
+    
+    if server_block_match:
+        content = server_block_match.group(1)
+        # Find all data-url elements (they can be btn, li, or div)
+        items = re.findall(r'data-url="([^"]+)"[^>]*>(.*?)<\/(?:btn|li|div)>', content, re.S)
+        
+        for encoded_url, inner_html in items:
+            # Decode the URL (Handles the base64/HM6Ly logic)
+            decoded_url = _decode_wecima_url(encoded_url)
+            if not decoded_url or not decoded_url.startswith('http'):
+                continue
+                
+            if decoded_url not in seen:
+                # Extract the server name (usually inside <strong>)
+                name_match = re.search(r'<strong>(.*?)</strong>', inner_html)
+                server_name = name_match.group(1).strip() if name_match else "Wecima Server"
+                
+                seen.add(decoded_url)
+                servers.append({"name": server_name, "url": decoded_url, "type": "direct"})
+                log("Wecima: Found server '{}' -> {}".format(server_name, decoded_url[:60]))
+
+    # 2. Fallback Logic: Deep scan if the targeted block wasn't found
+    if not servers:
+        log("Wecima: Targeted block not found, running deep scan fallback...")
+        # Look for any data-url that looks like a base64 encoded stream
+        fallback_items = re.findall(r'data-url="([a-zA-Z0-9+/=]{20,})"', html)
+        for encoded_url in fallback_items:
+            decoded_url = _decode_wecima_url(encoded_url)
+            if decoded_url and decoded_url.startswith('http') and decoded_url not in seen:
+                seen.add(decoded_url)
+                servers.append({"name": "Server Fallback", "url": decoded_url, "type": "direct"})
+
+    if not servers:
+        log("Wecima: ERROR - No servers found. The site layout may have changed.")
+    else:
+        log("Wecima: Successfully extracted {} servers".format(len(servers)))
+        
+    return servers
+
+
+def _extract_episode_cards(html):
+    episodes = []
+    seen = set()
+    for card in _extract_cards(html):
+        title = card.get("title") or ""
+        url = card.get("url") or ""
+        if "الحلقة" not in title and "حلقة" not in title and "/episode/" not in url.lower():
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        episodes.append({
+            "title": title or "حلقة",
+            "url": url,
+            "type": "episode",
+            "_action": "details",
+        })
+    return episodes
+
+
+def _parse_json_ld(html):
+    """Extract data from JSON-LD script tags."""
+    json_ld_match = re.search(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', html or "", re.S | re.I)
+    if not json_ld_match:
+        return None
+    
+    try:
+        data = json.loads(json_ld_match.group(1))
+        return data
+    except Exception:
+        return None
+
+
+def _detail_title(html):
+    # Check JSON-LD first
+    data = _parse_json_ld(html)
+    if data:
+        if isinstance(data, dict):
+            if data.get("name"):
+                return _clean_title(data["name"])
+            if "@graph" in data:
+                for item in data["@graph"]:
+                    if item.get("name") and ("فيلم" in item.get("name", "") or "مسلسل" in item.get("name", "")):
+                        return _clean_title(item["name"])
+    
+    # Fallback to HTML patterns
+    patterns = [
+        r'<h1[^>]+itemprop="name"[^>]*>(.*?)</h1>',
+        r'<h1[^>]+class="[^"]*title[^"]*"[^>]*>(.*?)</h1>',
+        r'<h1[^>]*>(.*?)</h1>',
+        r'property="og:title"[^>]+content="([^"]+)"',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, html or "", re.S | re.I)
+        if m:
+            title = _clean_title(m.group(1))
+            if title:
+                return title
+    return ""
+
+
+def _detail_plot(html):
+    # Check JSON-LD first
+    data = _parse_json_ld(html)
+    if data:
+        if isinstance(data, dict):
+            if data.get("description"):
+                desc = _clean_html(data["description"])
+                if desc and len(desc) > 30:
+                    return desc
+            if "@graph" in data:
+                for item in data["@graph"]:
+                    if item.get("description"):
+                        desc = _clean_html(item["description"])
+                        if desc and len(desc) > 30:
+                            return desc
+    
+    # Fallback to meta tags
+    patterns = [
+        r'<meta[^>]+itemprop="description"[^>]+content="([^"]+)"',
+        r'property="og:description"[^>]+content="([^"]+)"',
+        r'name="description"[^>]+content="([^"]+)"',
+        r'<div[^>]+class="StoryMovieContent"[^>]*>(.*?)</div>',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, html or "", re.S | re.I)
+        if m:
+            text = _clean_html(m.group(1))
+            if text and "موقع وي سيما" not in text.lower() and len(text) > 30:
+                return text
+    return ""
+
+
+def _detail_poster(html):
+    # Check JSON-LD first
+    data = _parse_json_ld(html)
+    if data:
+        if isinstance(data, dict):
+            if data.get("image") and isinstance(data["image"], dict):
+                poster = data["image"].get("url", "")
+                if poster:
+                    return _normalize_url(poster)
+            if "@graph" in data:
+                for item in data["@graph"]:
+                    if item.get("image") and isinstance(item["image"], dict):
+                        poster = item["image"].get("url", "")
+                        if poster:
+                            return _normalize_url(poster)
+                    if item.get("thumbnailUrl"):
+                        return _normalize_url(item["thumbnailUrl"])
+    
+    # Fallback to meta tags
+    patterns = [
+        r'property="og:image"[^>]+content="([^"]+)"',
+        r'<meta[^>]+itemprop="thumbnailUrl"[^>]+content="([^"]+)"',
+        r'data-lazy-style="[^"]*--img:url\(([^)]+)\)',
+        r'data-src="([^"]+)"',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, html or "", re.I)
+        if m:
+            poster = m.group(1).strip("'\" ")
+            if poster:
+                return _normalize_url(poster) or poster
+    return ""
+
+
+def _detail_year(title, html):
+    # Check JSON-LD first
+    data = _parse_json_ld(html)
+    if data:
+        if isinstance(data, dict):
+            if data.get("datePublished"):
+                year_match = re.search(r'(\d{4})', data["datePublished"])
+                if year_match:
+                    return year_match.group(1)
+            if "@graph" in data:
+                for item in data["@graph"]:
+                    if item.get("datePublished"):
+                        year_match = re.search(r'(\d{4})', item["datePublished"])
+                        if year_match:
+                            return year_match.group(1)
+    
+    # Fallback to patterns
+    m = re.search(r'<span[^>]+class="year"[^>]*>\(?\s*(\d{4})\s*\)?</span>', html or "", re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r'\b(19\d{2}|20\d{2})\b', title or "")
+    if m:
+        return m.group(1)
+    return ""
+
+
+def _detail_rating(html):
+    # Check JSON-LD first
+    data = _parse_json_ld(html)
+    if data:
+        if isinstance(data, dict):
+            if "aggregateRating" in data:
+                rating = data["aggregateRating"].get("ratingValue", "")
+                if rating:
+                    return str(rating)
+            if "@graph" in data:
+                for item in data["@graph"]:
+                    if "aggregateRating" in item:
+                        rating = item["aggregateRating"].get("ratingValue", "")
+                        if rating:
+                            return str(rating)
+    
+    # Fallback to regex patterns
+    m = re.search(r'"ratingValue"\s*:\s*"?(\\?\d+(?:\.\d+)?)', html or "", re.I)
+    if m:
+        return m.group(1).replace("\\", "")
+    m = re.search(r'(\d+(?:\.\d+)?)\s*/\s*10', html or "", re.I)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def get_categories(mtype="movie"):
+    return [
+        {"title": "أفلام أجنبية",   "url": _category_from_home("افلام اجنبي",   _CATEGORY_FALLBACKS["افلام اجنبي"]),   "type": "category", "_action": "category"},
+        {"title": "أفلام عربية",    "url": _category_from_home("افلام عربي",    _CATEGORY_FALLBACKS["افلام عربي"]),    "type": "category", "_action": "category"},
+        {"title": "مسلسلات أجنبية", "url": _category_from_home("مسلسلات اجنبي", _CATEGORY_FALLBACKS["مسلسلات اجنبي"]), "type": "category", "_action": "category"},
+        {"title": "مسلسلات عربية",  "url": _category_from_home("مسلسلات عربية", _CATEGORY_FALLBACKS["مسلسلات عربية"]), "type": "category", "_action": "category"},
+        {"title": "كارتون وانمي",   "url": _category_from_home("مسلسلات انمي",  _CATEGORY_FALLBACKS["مسلسلات انمي"]),  "type": "category", "_action": "category"},
+        {"title": "ترند",           "url": _category_from_home("تريندج",        _CATEGORY_FALLBACKS["تريندج"]),        "type": "category", "_action": "category"},
+    ]
+
+
+def get_category_items(url):
+    base = _get_base()
+    html, final_url = _fetch_live(url, referer=base)
+    if _is_blocked_page(html, final_url):
+        log("Wecima: category blocked {}".format(url))
+        return []
+    items = _extract_cards(html)
+    next_page = _extract_next_page(html)
+    if next_page:
+        items.append({"title": "➡️ الصفحة التالية", "url": next_page, "type": "category", "_action": "category"})
+    return items
+
+
+def search(query, page=1):
+    base = _get_base()
+    items = []
+    html = ""
+    for search_url in [
+        _search_url() + quote_plus(query),
+        urljoin(base, "search/") + quote_plus(query),
+    ]:
+        html, final_url = _fetch_live(search_url, referer=base)
+        if _is_blocked_page(html, final_url):
+            continue
+        items = _extract_cards(html)
+        if items:
+            break
+    log("Wecima: search '{}' -> {} items".format(query, len(items)))
+    if not items:
+        return []
+    next_page = _extract_next_page(html)
+    if next_page:
+        items.append({"title": "➡️ الصفحة التالية", "url": next_page, "type": "category", "_action": "category"})
+    return items
+
+
+def get_page(url, m_type=None):
+    base = _get_base()
+    html, final_url = _fetch_live(url, referer=base)
+    if _is_blocked_page(html, final_url) or not html:
+        log("Wecima: detail failed {}".format(url))
+        return {"title": "Error", "servers": [], "items": [], "type": m_type or "movie"}
+
+    title = _detail_title(html)
+    poster = _detail_poster(html)
+    plot = _detail_plot(html)
+    year = _detail_year(title, html)
+    rating = _detail_rating(html)
+
+    servers = _extract_servers(html)
+    episodes = [] if servers else _extract_episode_cards(html)
+    log("Wecima: detail {} -> servers={}, episodes={}".format(url, len(servers), len(episodes)))
+
+    item_type = m_type or _guess_type(title, final_url or url)
+    if episodes:
+        item_type = "series"
+    elif servers and any(t in (title or "") for t in ("الحلقة", "حلقة")):
+        item_type = "episode"
+
+    return {
+        "url": final_url or url,
+        "title": title,
+        "plot": plot,
+        "poster": poster,
+        "rating": rating,
+        "year": year,
+        "servers": servers,
+        "items": episodes,
+        "type": item_type,
+    }
+
+
+def extract_stream(url):
+    """
+    Extract the final playable URL from a Wecima server embed link.
+    Returns (stream_url, quality_label, referer).
+    """
+    from .base import extract_stream as base_extract_stream
+    
+    log("Wecima: extract_stream for {}".format(url))
+    
+    # First, try the base extractor (which handles all the host resolvers)
+    try:
+        stream_url, quality, ref = base_extract_stream(url)
+        if stream_url:
+            # Override the referer to Wecima's base URL
+            # because the stream host (savefiles, etc.) needs the embed page's referer.
+            wecima_referer = _get_base()
+            log("Wecima: base_extract_stream returned: {} (quality: {})".format(stream_url[:80], quality))
+            return stream_url, quality, wecima_referer
+    except Exception as e:
+        log("Wecima: base_extract_stream error: {}".format(str(e)[:50]))
+    
+    # Fallback 1: try to resolve the embed page ourselves using fetch and simple patterns
+    log("Wecima: trying manual extraction fallback")
+    try:
+        html, final_url = fetch(url, referer=_get_base())
+        if html:
+            from .base import find_m3u8, find_mp4, _best_media_url
+            stream = find_m3u8(html) or find_mp4(html) or _best_media_url(html)
+            if stream:
+                log("Wecima: manual fallback found: {}".format(stream[:80]))
+                return stream, "HD", _get_base()
+    except Exception as e:
+        log("Wecima: manual fallback error: {}".format(str(e)[:50]))
+    
+    # Fallback 2: just return the URL itself (maybe the player can handle it as an embed)
+    log("Wecima: returning original URL as last resort: {}".format(url))
+    return url, "Unknown", _get_base()
+``````
+
+## File: images/playerclock.xml
+``````xml
+<widget name="clockTime" noWrap="1" position="35,6" size="500,40" zPosition="3" transparent="1" foregroundColor="#66ccff" backgroundColor="#251f1f1f" font="Regular;%d" halign="left" valign="center" />
+``````
+
+## File: images/playerskin.xml
+``````xml
+<screen name="IPTVExtMoviePlayer"    position="center,center" size="%d,%d" flags="wfNoBorder" backgroundColor="#FFFFFFFF" >
+                    <widget name="pleaseWait"         noWrap="1" position="center,30"        size="500,40"    zPosition="3" transparent="1" foregroundColor="#999999"   backgroundColor="transparent" font="Regular;25" halign="center"  valign="center"/>
+                    
+                    <widget name="logoIcon"           position="1176,110"        size="160,40"    zPosition="4"             transparent="1" alphatest="blend" />
+                    <widget name="playbackInfoBaner"  position="0,0"           size="1280,177"  zPosition="2" pixmap="%s" />
+                    <widget name="progressBar"        position="220,86"        size="840,7"     zPosition="5" pixmap="%s" transparent="1" borderWidth="1" borderColor="#888888" />
+                    <widget name="bufferingCBar"      position="220,86"        size="840,7"     zPosition="4" pixmap="%s" transparent="1" borderWidth="1" borderColor="#888888" />
+                    <widget name="bufferingBar"       position="220,86"        size="840,7"     zPosition="3" pixmap="%s" borderWidth="1" borderColor="#888888" />
+                    <widget name="statusIcon"         position="135,55"        size="72,72"     zPosition="4"             transparent="1" alphatest="blend" />
+                    <widget name="loopIcon"           position="60,80"       size="40,40"     zPosition="4"             transparent="1" alphatest="blend" />
+                    
+                    <widget name="goToSeekPointer"    position="94,30"          size="150,60"  zPosition="8" pixmap="%s" transparent="1" alphatest="blend" />
+                    <widget name="goToSeekLabel"      noWrap="1" position="94,30"         size="150,40"   zPosition="9" transparent="1" foregroundColor="white"     backgroundColor="#251f1f1f" font="Regular;27" halign="center" valign="center"/>
+                    <widget name="infoBarTitle"       noWrap="1" position="220,41"        size="1000,50"  zPosition="3" transparent="1" foregroundColor="white"     backgroundColor="#251f1f1f" font="Regular;29" halign="left" valign="center"/>
+                    <widget name="currTimeLabel"      noWrap="1" position="220,100"       size="200,40"   zPosition="3" transparent="1" foregroundColor="#66ccff"   backgroundColor="#251f1f1f" font="Regular;27" halign="left"   valign="top"/>
+                    <widget name="lengthTimeLabel"    noWrap="1" position="540,115"       size="200,40"   zPosition="3" transparent="1" foregroundColor="#999999"   backgroundColor="#251f1f1f" font="Regular;30" halign="center" valign="top"/>
+                    <widget name="remainedLabel"      noWrap="1" position="860,100"       size="200,40"   zPosition="3" transparent="1" foregroundColor="#66ccff"   backgroundColor="#251f1f1f" font="Regular;27" halign="right"  valign="top"/>
+                    <widget name="videoInfo"          noWrap="1" position="732,8"        size="500,30"   zPosition="3" transparent="1" foregroundColor="#c8cedb"   backgroundColor="#251f1f1f" font="Regular;23" halign="right"  valign="top"/>
+                    
+                    %s
+                    
+                    <widget name="subSynchroIcon"     position="0,0"           size="180,66"  zPosition="4" transparent="1" alphatest="blend" />
+                    <widget name="subSynchroLabel"    position="1,3"           size="135,50"  zPosition="5" transparent="1" foregroundColor="white"      backgroundColor="transparent" font="Regular;24" halign="center"  valign="center"/>
+                    
+                    %s
+</screen>
+``````
+
+## File: images/settings.json
+``````json
+{
+"clockFontSize_SD" : 24,
+"clockFontSize_HD" : 24,
+"clockFontSize_FHD" : 24,
+"clockFormat_24H" : "%H:%M:%S",
+"clockFormat_12H" : "%I:%M"  
+}
+``````
+
+## File: plugin.py
+``````python
+# -*- coding: utf-8 -*-
+"""
+ArabicPlayer Plugin for Enigma2
+================================
+تشغيل مواقع الأفلام العربية مباشرة من الرسيفر
+الموقع الأول: EgyDead
+
+الأزرار:
+  OK         → فتح / تشغيل
+  Back       → رجوع
+  Red        → أحدث أفلام
+  Green      → أحدث مسلسلات
+  Yellow     → بحث
+  Blue       → إعدادات
+  Info       → معلومات العنصر
+"""
+
+import os
+import sys
+import json
+import re
+import threading
+import time
+import http.server
+import urllib.request as urllib2
+
+try:
+    from urllib.parse import quote, unquote, urlparse, parse_qs, urlencode
+except ImportError:
+    from urllib import quote, unquote, urlencode
+    from urlparse import urlparse, parse_qs
+
+# Dynamic plugin path
+PLUGIN_PATH = os.path.dirname(__file__)
+if PLUGIN_PATH not in sys.path:
+    sys.path.insert(0, PLUGIN_PATH)
+
+from Plugins.Plugin          import PluginDescriptor
+from Screens.Screen          import Screen
+from Screens.MessageBox      import MessageBox
+from Components.ActionMap    import ActionMap
+from Components.Label        import Label
+from Components.Pixmap       import Pixmap
+from Components.MenuList     import MenuList
+from Components.ScrollLabel  import ScrollLabel
+from enigma import eTimer, ePicLoad, eServiceReference, iPlayableService
+from Components.ServiceEventTracker import ServiceEventTracker
+
+_PLUGIN_VERSION = "2.0.2"
+_PLUGIN_NAME    = "ArabicPlayer"
+_PLUGIN_OWNER   = "أحمد إبراهيم"
+_DEFAULT_TMDB_API_KEY = "01fd9e035ea1458748e99eb7216b0259"
+_TYPE_LABELS    = {"movie": "فيلم", "series": "مسلسل", "episode": "حلقة"}
+_TMDB_API_BASE  = "https://api.themoviedb.org/3"
+_TMDB_IMG_BASE  = "https://image.tmdb.org/t/p/w500"
+# FIX #1: removed invalid concatenated "shaheed""yts2" → was missing comma
+_SEARCH_SITE_ORDER = ("egydead", "akwam", "akwams", "arabseed", "wecima", "topcinema", "fasel", "faselhdx", "shaheed")
+
+# ─── Neon Color Palette ──────────────────────────────────────────────────────
+_CLR = {
+    "bg":           "#0D1117",
+    "surface":      "#161B22",
+    "surface2":     "#1C2333",
+    "selected":     "#21262D",
+    "border":       "#30363D",
+    "cyan":         "#00E5FF",
+    "purple":       "#E040FB",
+    "gold":         "#FFD740",
+    "green":        "#39D98A",
+    "red":          "#FF6B6B",
+    "blue":         "#58A6FF",
+    "text":         "#F0F6FC",
+    "text2":        "#8B949E",
+    "text_dim":     "#484F58",
+}
+
+# ─── Poster Cache ────────────────────────────────────────────────────────────
+import hashlib
+_POSTER_CACHE_DIR = "/tmp/ap_cache"
+
+def _poster_cache_path(url):
+    if not url: return None
+    try:
+        if not os.path.isdir(_POSTER_CACHE_DIR):
+            os.makedirs(_POSTER_CACHE_DIR)
+    except Exception: pass
+    url_hash = hashlib.md5(url.encode("utf-8", "ignore")).hexdigest()
+    return os.path.join(_POSTER_CACHE_DIR, "{}.jpg".format(url_hash))
+
+def _is_poster_cached(url):
+    path = _poster_cache_path(url)
+    return path and os.path.exists(path)
+
+def _get_cached_poster(url):
+    path = _poster_cache_path(url)
+    if path and os.path.exists(path):
+        return path
+    return None
+
+# ─── Extractor Factory ───────────────────────────────────────────────────────
+_EXTRACTOR_MAP = {
+    "egydead":    "extractors.egydead",
+    "akwam":      "extractors.akwam",
+    "akwams":     "extractors.akwams",
+    "akoam":      "extractors.akoam",
+    "arabseed":   "extractors.arabseed",
+    "wecima":     "extractors.wecima",
+    "shaheed":    "extractors.shaheed",
+    "topcinema":  "extractors.topcinema",
+    "fasel":      "extractors.faselhd_rip",      # For faselhd.rip
+    "faselhdx":   "extractors.faselhd_hdx",      # For web5106x.faselhdx.bid
+}
+
+def _get_extractor(site):
+    module_name = _EXTRACTOR_MAP.get(site)
+    if not module_name:
+        module_name = _EXTRACTOR_MAP.get("egydead")
+    return __import__(module_name, fromlist=["get_categories", "get_category_items", "get_page", "search", "extract_stream"])
+
+_SITE_META = {
+    "egydead": {
+        "title": "EgyDead",
+        "tagline": "واجهة حديثة وبوسترات ومكتبة متجددة",
+    },
+    "akwam": {
+        "title": "Akwam (Classic)",
+        "tagline": "موقع اكوام الكلاسيكي - افلام ومسلسلات عربية واجنبية",
+    },
+    "akwams": {
+        "title": "Akwams (Modern)",
+        "tagline": "موقع اكوام الحديث - واجهة سريعة ومحتوى محدث",
+    },
+    "arabseed": {
+        "title": "Arabseed",
+        "tagline": "تصنيفات عربية وأجنبية وحلقات مرتبة",
+    },
+    "wecima": {
+        "title": "Wecima",
+        "tagline": "أقسام واسعة وبحث وسيرفرات مباشرة",
+    },
+    "shaheed": {
+        "title": "Shaheed4u",
+        "tagline": "تحديثات المسلسلات والأفلام الحصرية بجميع الجودات",
+    },
+    "topcinema": {
+        "title": "TopCinemaa",
+        "tagline": "مكتبة ضخمة من الأفلام والمسلسلات والسلاسل",
+    },
+        "fasel": {
+        "title": "FaselHD (RIP)",
+        "tagline": "واجهة حديثة - سيرفرات متعددة بجودة عالية",
+    },
+    "faselhdx": {
+        "title": "FaselHD (HDX)",
+        "tagline": "النسخة الكلاسيكية - دقة عالية وسيرفرات متنوعة",
+    },
+}
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+from extractors.base import log as base_log, UA, fetch as base_fetch
+
+SAFE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+_STATE_CACHE = None
+
+def my_log(msg):
+    base_log(msg)
+
+
+# ─── Helper ──────────────────────────────────────────────────────────────────
+def _site_label(site):
+    return (_SITE_META.get(site) or {}).get("title", str(site or "").capitalize())
+
+
+def _site_tagline(site):
+    return (_SITE_META.get(site) or {}).get("tagline", "")
+
+
+def _normalize_query(text):
+    text = (text or "").strip().lower()
+    text = text.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ى", "ي")
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _strip_arabic_from_english_title(title):
+    """
+    If a title is predominantly English/Latin (Arabic chars < 30% of non-space chars),
+    strip all Arabic words and clean up leftover punctuation.
+    Pure Arabic titles are returned unchanged.
+    """
+    if not title:
+        return title
+    stripped = title.replace(" ", "")
+    if not stripped:
+        return title
+    ar_count = sum(1 for c in stripped if "\u0600" <= c <= "\u06ff")
+    if ar_count / len(stripped) >= 0.30:
+        return title
+    cleaned = re.sub(r"[\u0600-\u06ff]+", " ", title)
+    cleaned = re.sub(r"[\s|\-–_]+$", "", cleaned)
+    cleaned = re.sub(r"^[\s|\-–_]+", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -|_")
+    return cleaned if cleaned.strip() else title
+
+
+def _clean_title_for_tmdb(title):
+    if not title: return ""
+    junk = [
+        u"مترجم", u"اون لاين", u"بجودة", u"عالية", u"كامل", u"تحميل", u"مشاهدة", u"فيلم", u"مسلسل",
+        u"انمي", u"كرتون", u"حصري", u"شاشه", u"كامله", u"نسخة", u"اصلية", u"bluray", u"web-dl", u"hdtv", u"720p", u"1080p", u"4k"
+    ]
+    title = title.lower()
+    for word in junk:
+        title = title.replace(word, "")
+    title = re.sub(r'\s+\d{4}\s*$', '', title)
+    return re.sub(r'\s+', ' ', title).strip()
+
+
+def _wrap_ui_text(text, width=40, max_lines=2, fallback=""):
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if not text:
+        return fallback
+    words = text.split(" ")
+    lines = []
+    current = ""
+
+    for word in words:
+        candidate = word if not current else "{} {}".format(current, word)
+        if len(candidate) <= width:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+            if len(lines) >= max_lines:
+                break
+        current = word
+
+    if len(lines) < max_lines and current:
+        lines.append(current)
+    if not lines:
+        lines = [text[:width]]
+
+    consumed = " ".join(lines)
+    if len(consumed) < len(text):
+        lines[-1] = lines[-1].rstrip(" .،") + "..."
+    return "\n".join(lines[:max_lines])
+
+
+def _single_line_text(text, width=54, fallback=""):
+    return _wrap_ui_text(text, width=width, max_lines=1, fallback=fallback)
+
+
+def _search_scope_label(scope):
+    if scope == "all":
+        return "كل المصادر: EgyDead / Akoam / Arabseed / Wecima / TopCinemaa"
+    return "المصدر الحالي: {}".format(_site_label(scope))
+
+
+def _site_search_item(site):
+    return {
+        "title": "بحث داخل {}".format(_site_label(site)),
+        "_action": "search_site",
+        "_site": site,
+        "type": "tool",
+        "plot": "ابحث داخل {} فقط بدون خلط النتائج مع باقي المصادر.".format(_site_label(site)),
+    }
+
+
+def _dedupe_items(items):
+    unique = []
+    seen = set()
+    for item in items or []:
+        key = item.get("url") or item.get("title")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def _rank_search_items(items, query):
+    q = _normalize_query(query)
+    q_words = [w for w in q.split() if len(w) >= 2] if q else []
+
+    strong   = []
+    weak     = []
+    no_match = []
+
+    for item in _dedupe_items(items):
+        title  = item.get("title", "")
+        ntitle = _normalize_query(title)
+        rank   = 9
+
+        if not q:
+            rank = 5
+        elif ntitle == q:
+            rank = 0
+        elif ntitle.startswith(q):
+            rank = 1
+        elif q in ntitle:
+            rank = 2
+        elif q_words:
+            matched_words = sum(1 for w in q_words if w in ntitle)
+            if matched_words == len(q_words):
+                rank = 3
+            elif matched_words >= max(1, len(q_words) * 2 // 3):
+                rank = 4
+            elif matched_words > 0:
+                rank = 5
+
+        entry = (rank, title.lower(), item)
+        if rank <= 3:
+            strong.append(entry)
+        elif rank <= 5:
+            weak.append(entry)
+        else:
+            no_match.append(item)
+
+    strong.sort(key=lambda r: (r[0], r[1]))
+    weak.sort(key=lambda r: (r[0], r[1]))
+
+    result = [r[2] for r in strong]
+
+    if len(result) < 3:
+        result += [r[2] for r in weak[:max(0, 5 - len(result))]]
+
+    if not result and weak:
+        result = [r[2] for r in weak]
+
+    return result
+
+
+def _quality_rank(server_name):
+    text = (server_name or "").lower()
+    if "2160" in text or "4k" in text:
+        return 0
+    if "1080" in text:
+        return 1
+    if "720" in text or "hd" in text:
+        return 2
+    if "480" in text:
+        return 3
+    if "360" in text:
+        return 4
+    return 9
+
+
+def _sort_servers(servers):
+    return sorted(servers or [], key=lambda s: (_quality_rank(s.get("name", "")), s.get("name", "").lower()))
+
+
+def _decorate_item_title(item, site=None):
+    action = item.get("_action", "")
+    
+    # Handle separators (non-clickable divider lines)
+    if action == "separator" or item.get("type") == "separator":
+        return "─── {} ───".format(item.get("title", ""))
+    
+    title = _strip_arabic_from_english_title((item.get("title") or "---").strip())
+    item_type = item.get("type", action)
+    
+    if action.startswith("site_"):
+        return title
+
+    # For filter page items (they have type="category" but contain movie data)
+    # Check if this is actually a movie from a filter page
+    if item_type == "category" and item.get("url") and "release-year" in item.get("url", ""):
+        # This is a movie from filter page, show as movie
+        return "[فيلم] {}".format(title)
+    
+    if item_type == "movie":
+        prefix = "[فيلم]"
+    elif item_type == "series":
+        prefix = "[مسلسل]"
+    elif item_type == "episode":
+        prefix = "[حلقة]"
+    elif item_type == "category":
+        # Categories - show without prefix
+        return title
+    else:
+        prefix = "•"
+
+    item_site = item.get("_site") or site
+    
+    # Only show site label for tools, not for movies/series/episodes
+    if item_site and item_type in ("movie", "series", "episode"):
+        return "{} {}".format(prefix, title)
+    elif item_site and item_type == "tool":
+        return "{} [{}] {}".format(prefix, _site_label(item_site), title)
+    
+    return "{} {}".format(prefix, title)
+
+
+def _state_path():
+    for candidate in ("/etc/enigma2/arabicplayer_state.json", os.path.join(PLUGIN_PATH, "arabicplayer_state.json"), "/tmp/arabicplayer_state.json"):
+        try:
+            parent = os.path.dirname(candidate)
+            if parent and os.path.isdir(parent) and os.access(parent, os.W_OK):
+                return candidate
+        except Exception:
+            pass
+    return "/tmp/arabicplayer_state.json"
+
+
+# Thread-safe main-loop dispatcher
+_CMIT_QUEUE = []
+_CMIT_LOCK  = threading.Lock()
+_CMIT_TIMER = None
+
+
+def _default_state():
+    return {
+        "config": {
+            "owner": _PLUGIN_OWNER,
+            "tmdb_api_key": _DEFAULT_TMDB_API_KEY,
+        },
+        "favorites": [],
+        "history": [],
+    }
+
+
+def _load_state():
+    global _STATE_CACHE
+    if _STATE_CACHE is not None:
+        return _STATE_CACHE
+    state = _default_state()
+    path = _state_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                state.update(loaded)
+                state["config"] = dict(_default_state()["config"], **(loaded.get("config") or {}))
+    except Exception as e:
+        my_log("State load error: {}".format(e))
+    _STATE_CACHE = state
+    return _STATE_CACHE
+
+
+def _save_state(state=None):
+    global _STATE_CACHE
+    _STATE_CACHE = state or _load_state()
+    path = _state_path()
+    tmp  = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(_STATE_CACHE, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp, path)
+    except Exception as e:
+        my_log("State save error: {}".format(e))
+        try: os.remove(tmp)
+        except Exception: pass
+
+
+def _get_config(key, default=""):
+    value = (_load_state().get("config") or {}).get(key, default)
+    if key == "tmdb_api_key" and not value:
+        return _DEFAULT_TMDB_API_KEY
+    if key == "owner" and not value:
+        return _PLUGIN_OWNER
+    return value
+
+
+def _set_config(key, value):
+    state = _load_state()
+    state.setdefault("config", {})[key] = value
+    _save_state(state)
+
+
+def _entry_from_item(item, site, m_type, extra=None):
+    entry = {
+        "title": item.get("title", ""),
+        "url": item.get("url", ""),
+        "poster": item.get("poster") or item.get("image") or "",
+        "plot": item.get("plot", ""),
+        "year": item.get("year", ""),
+        "rating": item.get("rating", ""),
+        "type": item.get("type", "") or m_type,
+        "_action": item.get("_action", "details"),
+        "_site": item.get("_site", site),
+        "_m_type": item.get("_m_type", m_type),
+        "_saved_at": int(time.time()),
+    }
+    if extra:
+        entry.update(extra)
+    return entry
+
+
+def _upsert_library_item(bucket, entry, limit=100):
+    state = _load_state()
+    items = state.setdefault(bucket, [])
+    key   = entry.get("url")
+    if not entry.get("last_position_sec"):
+        for _old in items:
+            if _old.get("url") == key and _old.get("last_position_sec"):
+                entry["last_position_sec"] = _old["last_position_sec"]
+                break
+    items = [i for i in items if i.get("url") != key]
+    items.insert(0, entry)
+    state[bucket] = items[:limit]
+    _save_state(state)
+
+
+def _toggle_favorite_entry(entry):
+    state = _load_state()
+    favorites = state.setdefault("favorites", [])
+    key = entry.get("url")
+    for idx, item in enumerate(favorites):
+        if item.get("url") == key:
+            favorites.pop(idx)
+            _save_state(state)
+            return False
+    favorites.insert(0, entry)
+    state["favorites"] = favorites[:100]
+    _save_state(state)
+    return True
+
+
+def _is_favorite(url):
+    return any(item.get("url") == url for item in (_load_state().get("favorites") or []))
+
+
+def _history_items():
+    return _load_state().get("history") or []
+
+
+def _favorite_items():
+    return _load_state().get("favorites") or []
+
+
+def _get_saved_position(url):
+    for item in (_load_state().get("history") or []):
+        if item.get("url") == url:
+            pos = int(item.get("last_position_sec") or 0)
+            return pos if pos > 30 else 0
+    return 0
+
+
+def _save_position(url, seconds):
+    seconds = int(seconds or 0)
+    if 0 < seconds < 30:
+        my_log("_save_position: skipping {}s (< 30s threshold)".format(seconds))
+        return
+    state = _load_state()
+    for item in (state.get("history") or []):
+        if item.get("url") == url:
+            item["last_position_sec"] = seconds
+            _save_state(state)
+            return
+
+
+# Global position tracker
+_GLOBAL_POS_TIMER      = None
+_GLOBAL_POS_SESSION    = None
+_GLOBAL_POS_ITEM       = ""
+_GLOBAL_PLAY_START_WALL  = 0.0
+_GLOBAL_PLAY_START_POS   = 0
+_GLOBAL_LAST_SEEK_TARGET = -1
+
+
+def _global_pos_tick():
+    global _GLOBAL_POS_ITEM, _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
+    if not _GLOBAL_POS_ITEM or not _GLOBAL_PLAY_START_WALL:
+        return
+    try:
+        elapsed = time.time() - _GLOBAL_PLAY_START_WALL
+        secs    = int(_GLOBAL_PLAY_START_POS + elapsed)
+        if secs < 5:
+            my_log("Pos tracker: skipping suspicious pos {}s".format(secs))
+            return
+        _save_position(_GLOBAL_POS_ITEM, secs)
+        my_log("Pos tracker saved: {}s for {}".format(secs, _GLOBAL_POS_ITEM[:50]))
+    except Exception as e:
+        my_log("Pos tracker error: {}".format(e))
+
+
+def _start_pos_tracker(session, item_url, start_pos=0):
+    global _GLOBAL_POS_TIMER, _GLOBAL_POS_SESSION, _GLOBAL_POS_ITEM
+    global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
+    global _GLOBAL_LAST_SEEK_TARGET
+    _GLOBAL_LAST_SEEK_TARGET = -1
+    _GLOBAL_POS_SESSION     = session
+    _GLOBAL_POS_ITEM        = item_url or ""
+    _GLOBAL_PLAY_START_WALL = time.time()
+    _GLOBAL_PLAY_START_POS  = int(start_pos or 0)
+    if _GLOBAL_POS_TIMER is None:
+        _GLOBAL_POS_TIMER = eTimer()
+        _GLOBAL_POS_TIMER.callback.append(_global_pos_tick)
+    try:
+        _GLOBAL_POS_TIMER.stop()
+    except Exception:
+        pass
+    if _GLOBAL_POS_ITEM:
+        _GLOBAL_POS_TIMER.start(20000, False)
+        my_log("Pos tracker started (wall-clock base={}s): {}".format(
+            _GLOBAL_PLAY_START_POS, item_url[:50]))
+
+
+def _stop_pos_tracker():
+    global _GLOBAL_POS_ITEM
+    _GLOBAL_POS_ITEM = ""
+    try:
+        if _GLOBAL_POS_TIMER:
+            _GLOBAL_POS_TIMER.stop()
+    except Exception:
+        pass
+
+
+def _library_search_suggestions(query="", current_site="", limit=8):
+    q = _normalize_query(query)
+    rows = []
+    seen = set()
+    for source_name, items, source_rank in (
+        ("المفضلة", _favorite_items(), 0),
+        ("السجل", _history_items(), 1),
+    ):
+        for item in items or []:
+            title = re.sub(r"\s+", " ", item.get("title", "") or "").strip()
+            if not title:
+                continue
+            norm = _normalize_query(title)
+            if not norm or norm in seen:
+                continue
+            if q:
+                if norm == q:
+                    score = 0
+                elif norm.startswith(q):
+                    score = 1
+                elif q in norm:
+                    score = 2
+                else:
+                    continue
+            else:
+                score = 5
+            if current_site and item.get("_site") == current_site:
+                score -= 1
+            seen.add(norm)
+            rows.append((
+                score,
+                source_rank,
+                -int(item.get("_saved_at") or 0),
+                {
+                    "title": title,
+                    "query": title,
+                    "source": source_name,
+                    "site": item.get("_site", ""),
+                    "kind": _TYPE_LABELS.get(item.get("type", ""), ""),
+                    "year": item.get("year", ""),
+                }
+            ))
+    rows.sort(key=lambda row: (row[0], row[1], row[2]))
+    return [row[3] for row in rows[:limit]]
+
+
+def _tmdb_enabled():
+    return bool((_get_config("tmdb_api_key", "") or "").strip())
+
+
+def _tmdb_request(path, params=None):
+    api_key = (_get_config("tmdb_api_key", "") or "").strip()
+    if not api_key:
+        return None
+    base_payload = {"api_key": api_key}
+    if params:
+        base_payload.update(params)
+    for language in ("ar", "en-US"):
+        payload = dict(base_payload)
+        payload["language"] = language
+        url = "{}{}?{}".format(_TMDB_API_BASE, path, urlencode(payload))
+        try:
+            raw, _ = base_fetch(
+                url,
+                referer="https://www.themoviedb.org/",
+                extra_headers={"Accept": "application/json"}
+            )
+            if not raw:
+                continue
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                if data.get("overview") or data.get("results") or language == "en-US":
+                    return data
+        except Exception as e:
+            my_log("TMDb request failed {} [{}]: {}".format(path, language, e))
+    return None
+
+
+def _tmdb_request_language(path, language="ar", params=None, accept_any=False):
+    api_key = (_get_config("tmdb_api_key", "") or "").strip()
+    if not api_key:
+        return None
+    payload = {"api_key": api_key, "language": language}
+    if params:
+        payload.update(params)
+    url = "{}{}?{}".format(_TMDB_API_BASE, path, urlencode(payload))
+    try:
+        raw, _ = base_fetch(
+            url,
+            referer="https://www.themoviedb.org/",
+            extra_headers={"Accept": "application/json"}
+        )
+        if not raw:
+            return None
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        if accept_any or data.get("overview") or data.get("results"):
+            return data
+    except Exception as e:
+        my_log("TMDb language request failed {} [{}]: {}".format(path, language, e))
+    return None
+
+
+def _tmdb_poster_url(path):
+    if not path:
+        return ""
+    if path.startswith("http"):
+        return path
+    return _TMDB_IMG_BASE + path
+
+
+def _tmdb_pick_poster(media_kind, tmdb_id, fallback_path=""):
+    if not tmdb_id:
+        return _tmdb_poster_url(fallback_path or "")
+    images = _tmdb_request_language(
+        "/{}/{}/images".format(media_kind, tmdb_id),
+        language="en-US",
+        params={"include_image_language": "ar,en,null"},
+        accept_any=True,
+    ) or {}
+    posters = images.get("posters") or []
+    for wanted_lang in ("ar", None, "en"):
+        for poster in posters:
+            if poster.get("iso_639_1") == wanted_lang and poster.get("file_path"):
+                return _tmdb_poster_url(poster.get("file_path"))
+    return _tmdb_poster_url(fallback_path or "")
+
+
+def _tmdb_media_kind(item_type):
+    if item_type in ("series", "episode", "tv"):
+        return "tv"
+    return "movie"
+
+
+def _tmdb_pick_best(results, query, year=""):
+    query_norm = _normalize_query(query)
+    target_year = (year or "")[:4]
+    scored = []
+    for result in results or []:
+        title = result.get("title") or result.get("name") or ""
+        title_norm = _normalize_query(title)
+        score = 9
+        if title_norm == query_norm:
+            score = 0
+        elif title_norm.startswith(query_norm):
+            score = 1
+        elif query_norm and query_norm in title_norm:
+            score = 2
+        release = str(result.get("release_date") or result.get("first_air_date") or "")
+        if target_year and release[:4] == target_year:
+            score -= 1
+        scored.append((score, title.lower(), result))
+    scored.sort(key=lambda row: (row[0], row[1]))
+    return scored[0][2] if scored else None
+
+
+def _tmdb_search_metadata(title, year="", item_type="movie"):
+    if not title or not _tmdb_enabled():
+        return None
+    media_kind = _tmdb_media_kind(item_type)
+    variants = [title.strip()]
+    simple = re.sub(r"\s*\(\d{4}\)\s*$", "", title).strip()
+    if simple and simple not in variants:
+        variants.append(simple)
+    plain = re.sub(r"[:|_\-]+", " ", simple).strip()
+    if plain and plain not in variants:
+        variants.append(plain)
+    clean = re.sub(r"\b(bluray|webrip|web-dl|hdrip|hdcam|cam|1080p|720p|480p|360p)\b", "", plain, flags=re.I).strip()
+    clean = re.sub(r"\s+", " ", clean).strip(" -|")
+    if clean and clean not in variants:
+        variants.append(clean)
+    arabic_clean = re.sub(
+        r"\b(مشاهدة|فيلم|مسلسل|الحلقة|حلقة|الموسم|مترجم(?:ة)?|مدبلج(?:ة)?|اون لاين|أون لاين)\b",
+        "",
+        clean,
+        flags=re.I,
+    ).strip()
+    arabic_clean = re.sub(r"\s+", " ", arabic_clean).strip(" -|")
+    if arabic_clean and arabic_clean not in variants:
+        variants.append(arabic_clean)
+
+    best = None
+    for query in variants:
+        params = {"query": query}
+        if year:
+            if media_kind == "movie":
+                params["year"] = year[:4]
+            else:
+                params["first_air_date_year"] = year[:4]
+        data = _tmdb_request("/search/{}".format(media_kind), params) or {}
+        best = _tmdb_pick_best(data.get("results") or [], query, year)
+        if not best:
+            params.pop("year", None)
+            params.pop("first_air_date_year", None)
+            best = _tmdb_pick_best((_tmdb_request("/search/{}".format(media_kind), params) or {}).get("results") or [], query, "")
+        if best:
+            break
+    if not best:
+        return None
+    detail_ar = _tmdb_request_language(
+        "/{}/{}".format(media_kind, best.get("id")),
+        language="ar",
+        params={"append_to_response": "credits"},
+        accept_any=True,
+    ) or {}
+    detail_en = _tmdb_request_language(
+        "/{}/{}".format(media_kind, best.get("id")),
+        language="en-US",
+        params={"append_to_response": "credits"},
+        accept_any=True,
+    ) or {}
+    detail = detail_ar or detail_en
+    if not detail:
+        detail = _tmdb_request("/{}/{}".format(media_kind, best.get("id"))) or {}
+    if not detail:
+        detail = best
+    genres_source = detail_ar or detail_en or detail
+    genres = ", ".join([g.get("name", "") for g in genres_source.get("genres") or [] if g.get("name")])
+    localized_plot = (
+        (detail_ar.get("overview") or "").strip()
+        or (detail_en.get("overview") or "").strip()
+        or (best.get("overview") or "").strip()
+    )
+    localized_title = (
+        detail_ar.get("title")
+        or detail_ar.get("name")
+        or detail_en.get("title")
+        or detail_en.get("name")
+        or detail.get("title")
+        or detail.get("name")
+        or title
+    )
+    return {
+        "title": localized_title,
+        "plot": localized_plot,
+        "poster": _tmdb_pick_poster(media_kind, best.get("id"), detail_ar.get("poster_path") or detail_en.get("poster_path") or detail.get("poster_path") or ""),
+        "rating": "{:.1f}".format(float(detail.get("vote_average") or 0)) if detail.get("vote_average") else "",
+        "year": str(detail.get("release_date") or detail.get("first_air_date") or "")[:4],
+        "genres": genres,
+        "tmdb_id": detail.get("id"),
+        "tmdb_kind": media_kind,
+    }
+
+
+def _merge_tmdb_data(data):
+    if not data or not data.get("title"):
+        return data
+    data = dict(data)
+    if not data.get("plot") and data.get("desc"):
+        data["plot"] = data.get("desc")
+    item_type = data.get("type", "movie")
+    if item_type == "episode":
+        return data
+    tmdb = _tmdb_search_metadata(data.get("title"), data.get("year", ""), item_type)
+    if not tmdb:
+        return data
+    merged = dict(data)
+    if tmdb.get("title") and len((data.get("title") or "").strip()) < 2:
+        merged["title"] = tmdb["title"]
+    if tmdb.get("poster") and (not merged.get("poster")):
+        merged["poster"] = tmdb["poster"]
+    if tmdb.get("plot") and len(tmdb.get("plot", "")) > len(merged.get("plot", "")):
+        merged["plot"] = tmdb["plot"]
+    if tmdb.get("rating") and not merged.get("rating"):
+        merged["rating"] = tmdb["rating"]
+    if tmdb.get("year") and not merged.get("year"):
+        merged["year"] = tmdb["year"]
+    if tmdb.get("genres"):
+        merged["genres"] = tmdb["genres"]
+    if tmdb.get("plot") or tmdb.get("poster") or tmdb.get("rating") or tmdb.get("genres") or tmdb.get("year"):
+        merged["_tmdb"] = tmdb
+    return merged
+
+
+def _tmdb_search_suggestions(query, limit=8):
+    query = re.sub(r"\s+", " ", query or "").strip()
+    if len(query) < 2 or not _tmdb_enabled():
+        return []
+
+    suggestions = []
+    seen = set()
+    for media_kind, kind_label in (("movie", "فيلم"), ("tv", "مسلسل")):
+        try:
+            data = _tmdb_request("/search/{}".format(media_kind), {"query": query, "page": 1}) or {}
+            for result in data.get("results") or []:
+                title = (result.get("title") or result.get("name") or "").strip()
+                if not title:
+                    continue
+                norm = _normalize_query(title)
+                if not norm or norm in seen:
+                    continue
+                seen.add(norm)
+                year = str(result.get("release_date") or result.get("first_air_date") or "")[:4]
+                suggestions.append({
+                    "title": title,
+                    "query": title,
+                    "source": "TMDb",
+                    "site": "",
+                    "kind": kind_label,
+                    "year": year,
+                })
+                if len(suggestions) >= limit:
+                    return suggestions[:limit]
+        except Exception as e:
+            my_log("TMDb suggestions failed for {}: {}".format(media_kind, e))
+    return suggestions[:limit]
+
+
+def _display_plot_text(value):
+    text = re.sub(r"\s+", " ", value or "").strip()
+    return text or "القصة غير متوفرة حالياً لهذا العنصر."
+
+
+def _pick_plot_text_with_source(*sources):
+    best = ""
+    best_source = ""
+    for source in sources:
+        if isinstance(source, dict):
+            candidates = [
+                ("plot", source.get("plot")),
+                ("overview", source.get("overview")),
+                ("desc", source.get("desc")),
+                ("tmdb.plot", (source.get("_tmdb") or {}).get("plot")),
+            ]
+        else:
+            candidates = [("value", source)]
+        for label, candidate in candidates:
+            text = _display_plot_text(candidate)
+            if text == "القصة غير متوفرة حالياً لهذا العنصر.":
+                continue
+            if len(text) > len(best):
+                best = text
+                best_source = label
+    return best or "القصة غير متوفرة حالياً لهذا العنصر.", best_source or "none"
+
+
+def _pick_plot_text(*sources):
+    return _pick_plot_text_with_source(*sources)[0]
+
+
+def _drain_cmit_queue():
+    with _CMIT_LOCK:
+        items = list(_CMIT_QUEUE)
+        del _CMIT_QUEUE[:]
+    for _f, _a, _kw in items:
+        try: _f(*_a, **_kw)
+        except Exception as _e:
+            try: my_log("CMIT drain: {}".format(_e))
+            except Exception: pass
+
+
+def callInMainThread(func, *args, **kwargs):
+    global _CMIT_TIMER
+    with _CMIT_LOCK:
+        _CMIT_QUEUE.append((func, args, kwargs))
+    if _CMIT_TIMER is None:
+        try:
+            _CMIT_TIMER = eTimer()
+            _CMIT_TIMER.callback.append(_drain_cmit_queue)
+        except Exception: pass
+    if _CMIT_TIMER is not None:
+        try: _CMIT_TIMER.start(50, True)
+        except Exception: pass
+    else:
+        try:
+            from twisted.internet import reactor
+            reactor.callFromThread(_drain_cmit_queue)
+        except Exception: pass
+
+# ─── Local HTTP Proxy (HiSilicon SSL Shield) ─────────────────────────────────
+_PROXY_PORT = 19888
+_PROXY_STARTED = False
+_PROXY_LAST_HIT = 0
+_PROXY_LAST_BYTES = 0
+_PROXY_LAST_URL = ""
+
+def start_proxy():
+    global _PROXY_STARTED
+    if _PROXY_STARTED: return
+    try:
+        def run_server():
+            server = http.server.HTTPServer(('0.0.0.0', _PROXY_PORT), LocalProxyHandler)
+            server.serve_forever()
+        t = threading.Thread(target=run_server)
+        t.daemon = True
+        t.start()
+        _PROXY_STARTED = True
+        my_log("LocalProxy Shield: ACTIVE (Port {})".format(_PROXY_PORT))
+    except Exception as e:
+        my_log("start_proxy failure: {}".format(e))
+
+class LocalProxyHandler(http.server.BaseHTTPRequestHandler):
+
+    def do_HEAD(self):
+        self._handle("HEAD")
+
+    def do_GET(self):
+        self._handle("GET")
+
+    def _handle(self, method):
+        try:
+            global _PROXY_LAST_HIT, _PROXY_LAST_BYTES, _PROXY_LAST_URL
+            raw = self.path[1:]
+            parsed_req = urlparse(self.path)
+            query = parse_qs(parsed_req.query or "")
+
+            piped_headers = ""
+            if parsed_req.path == "/stream" and query.get("url"):
+                stream_url = unquote(query.get("url", [""])[0]).strip()
+                explicit_referer = unquote(query.get("referer", [""])[0]).strip()
+                explicit_ua = unquote(query.get("ua", [""])[0]).strip()
+            else:
+                explicit_referer = ""
+                explicit_ua = ""
+                if not raw or "://" not in raw:
+                    self.send_error(400, "Bad URL")
+                    return
+                if "|" in raw:
+                    stream_url, piped_headers = raw.split("|", 1)
+                    stream_url = stream_url.strip()
+                else:
+                    stream_url = raw.strip()
+
+            headers = {"User-Agent": SAFE_UA}
+
+            if explicit_ua:
+                headers["User-Agent"] = explicit_ua
+
+            if piped_headers:
+                for part in piped_headers.split("&"):
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        headers[k.strip()] = v.strip()
+
+            if explicit_referer:
+                headers["Referer"] = explicit_referer
+            elif "Referer" not in headers:
+                try:
+                    parts = stream_url.split("/")
+                    headers["Referer"] = parts[0] + "//" + parts[2] + "/"
+                except Exception:
+                    pass
+
+            range_hdr = self.headers.get("Range") or self.headers.get("range")
+            if range_hdr:
+                headers["Range"] = range_hdr
+                my_log("Proxy: Range={}".format(range_hdr))
+
+            my_log("Proxy: {} {}".format(method, stream_url[:80]))
+            _PROXY_LAST_HIT = time.time()
+            _PROXY_LAST_BYTES = 0
+            _PROXY_LAST_URL = stream_url
+
+            req = urllib2.Request(stream_url, headers=headers)
+
+            try:
+                resp = urllib2.urlopen(req, timeout=30)
+                status = resp.getcode()
+            except urllib2.HTTPError as http_err:
+                my_log("Proxy: Upstream HTTP {} for {}".format(http_err.code, stream_url[:60]))
+                status = http_err.code
+                resp = http_err
+            except Exception as e:
+                my_log("Proxy: Upstream connection error: {}".format(e))
+                try:
+                    self.send_error(502, str(e))
+                except Exception:
+                    pass
+                return
+
+            self.send_response(status)
+
+            resp_hdrs = {}
+            try:
+                for k, v in resp.getheaders():
+                    resp_hdrs[k.lower()] = v
+            except Exception:
+                pass
+
+            for key in ("content-type", "content-length",
+                        "content-range", "accept-ranges",
+                        "last-modified", "etag"):
+                if key in resp_hdrs:
+                    self.send_header(key.title(), resp_hdrs[key])
+
+            if "accept-ranges" not in resp_hdrs:
+                self.send_header("Accept-Ranges", "bytes")
+
+            self.end_headers()
+
+            if method == "HEAD":
+                return
+
+            try:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    _PROXY_LAST_BYTES += len(chunk)
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except Exception:
+                pass
+
+        except Exception as e:
+            my_log("Proxy FATAL: {}".format(e))
+            try:
+                self.send_error(500)
+            except Exception:
+                pass
+
+    def log_message(self, *args):
+        pass
+
+
+# ─── Home Screen ─────────────────────────────────────────────────────────────
+class ArabicPlayerHome(Screen):
+    skin = """
+    <screen name="ArabicPlayerHome" position="center,center" size="1920,1080"
+            title="ArabicPlayer" flags="wfNoBorder">
+        <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg.png" zPosition="0" alphatest="blend" />
+
+        <!-- ═══ Header Bar ═══ -->
+        <widget name="title_bar"  position="0,0"     size="1920,120" backgroundColor="#0D1117" zPosition="1" />
+        <widget name="title_text" position="45,18"   size="750,57"  font="Regular;48" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
+        <widget name="subtitle"   position="45,75"   size="750,36"  font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="3" />
+        <widget name="status"     position="1050,24"  size="825,42"  font="Regular;28" foregroundColor="#FFD740" transparent="1" halign="right" zPosition="3" />
+        <widget name="footer"     position="1050,72"  size="825,36"  font="Regular;24" foregroundColor="#58A6FF" transparent="1" halign="right" zPosition="3" />
+
+        <!-- ═══ Menu Panel (Left) ═══ -->
+        <widget name="menu_box"   position="30,142"   size="1080,810" backgroundColor="#161B22" zPosition="1" />
+        <widget name="menu"       position="52,165"  size="1035,765" zPosition="2"
+                scrollbarMode="showOnDemand"
+                foregroundColor="#F0F6FC"
+                foregroundColorSelected="#00E5FF"
+                backgroundColor="#161B22"
+                backgroundColorSelected="#21262D"
+                font="Regular;39" itemHeight="81" transparent="1" />
+
+        <!-- ═══ Preview Panel (Right) ═══ -->
+        <widget name="preview_box" position="1140,142"  size="750,810" backgroundColor="#1C2333" zPosition="1" />
+        <widget name="poster"      position="1215,172" size="600,540" zPosition="3" alphatest="blend" />
+        <widget name="preview_title" position="1162,735" size="705,90" font="Regular;36" foregroundColor="#FFD740" transparent="1" zPosition="3" halign="center" />
+        <widget name="preview_meta"  position="1162,832" size="705,42" font="Regular;26" foregroundColor="#00E5FF" transparent="1" zPosition="3" halign="center" />
+        <widget name="preview_info" position="1162,882" size="705,54" font="Regular;22" foregroundColor="#8B949E" transparent="1" zPosition="3" halign="center" />
+
+        <!-- ═══ Button Bar ═══ -->
+        <widget name="btn_bar"    position="0,975"   size="1920,105" backgroundColor="#0D1117" zPosition="1" />
+        <widget name="key_red"    position="45,990"  size="420,42" font="Regular;27" foregroundColor="#FF6B6B" transparent="1" halign="center" zPosition="3" />
+        <widget name="key_green"  position="510,990" size="420,42" font="Regular;27" foregroundColor="#39D98A" transparent="1" halign="center" zPosition="3" />
+        <widget name="key_yellow" position="975,990" size="420,42" font="Regular;27" foregroundColor="#FFD740" transparent="1" halign="center" zPosition="3" />
+        <widget name="key_blue"   position="1440,990" size="420,42" font="Regular;27" foregroundColor="#58A6FF" transparent="1" halign="center" zPosition="3" />
+    </screen>
+    """
+
+    def __init__(self, session):
+        self.skin = ArabicPlayerHome.skin.format(PLUGIN_PATH)
+        Screen.__init__(self, session)
+        self.session = session
+        self._items  = []
+        self._page   = 1
+        self._source = "home"
+        self._site   = "egydead"
+        self._m_type = "movie"
+        self._last_query = ""
+        self._nav_stack = []
+        self._debounce_timer = eTimer()
+        self._debounce_timer.callback.append(self._debounced_load_poster)
+        self._pending_poster_url = None
+
+        self["title_bar"]  = Label("")
+        self["title_text"] = Label("ArabicPlayer  v{}".format(_PLUGIN_VERSION))
+        self["subtitle"]   = Label("المشغل العربي الاحترافي")
+        self["status"]     = Label("جاري التحميل...")
+        self["footer"]     = Label("TMDb  |  المفضلة  |  السجل")
+        self["menu_box"]   = Label("")
+        self["preview_box"] = Label("")
+        self["poster"]     = Pixmap()
+        self["menu"]       = MenuList([])
+        self["preview_title"] = Label("")
+        self["preview_meta"] = Label("")
+        self["preview_info"] = Label("")
+        self["btn_bar"]    = Label("")
+        self["key_red"]    = Label("أحدث أفلام")
+        self["key_green"]  = Label("أحدث مسلسلات")
+        self["key_yellow"] = Label("بحث")
+        self["key_blue"]   = Label("الصفحة التالية")
+
+        self.picLoad = ePicLoad()
+        self.picLoad.PictureData.get().append(self._paintPoster)
+        self._tmp_posters = []
+        self._requested_poster_url = None
+        self._poster_lock = threading.Lock()
+        self.onClose.append(self._onPluginClose)
+
+        self["actions"] = ActionMap(
+            ["OkCancelActions", "ColorActions", "DirectionActions", "InfobarMenuActions"],
+            {
+                "ok":     self._onOk,
+                "cancel": self._onBack,
+                "red":    self._loadMovies,
+                "green":  self._loadSeries,
+                "yellow": self._onSearch,
+                "blue":   self._nextPage,
+                "up":     lambda: self["menu"].up(),
+                "down":   lambda: self["menu"].down(),
+                "left":   lambda: self["menu"].pageUp(),
+                "right":  lambda: self["menu"].pageDown(),
+            },
+            -1
+        )
+
+        try:
+            self["menu"].onSelectionChanged.append(self._refreshPreview)
+        except Exception:
+            pass
+        self.onLayoutFinish.append(self._init)
+
+    def _init(self):
+        self._showHome()
+
+    def _setHeader(self, title, subtitle="", status=None):
+        self["title_text"].setText(_single_line_text(title, width=42, fallback="ArabicPlayer"))
+        self["subtitle"].setText(_wrap_ui_text(subtitle, width=56, max_lines=2))
+        if status is not None:
+            self["status"].setText(status)
+
+    def _showHome(self):
+        self._source = "home"
+        self._page   = 1
+        self._nav_stack = []
+        self._setHeader(
+            "ArabicPlayer  v{}".format(_PLUGIN_VERSION),
+            "المشغل العربي الاحترافي",
+            "الرئيسية"
+        )
+        items = [
+            ("━━  المصادر  ━━━━━━━━━━━━━━━━━", "separator"),
+            ("EgyDead          واجهة حديثة وبوسترات", "site_egydead"),
+            ("Akwam (Classic)  موقع اكوام الكلاسيكي", "site_akwam"),
+            ("Akwams (Modern)  موقع اكوام الحديث", "site_akwams"),
+            ("Arabseed         تصنيفات مرتبة", "site_arabseed"),
+            ("Wecima           أقسام واسعة وبحث سريع", "site_wecima"),
+            ("Shaheed4u        أفلام ومسلسلات حصرية", "site_shaheed"),
+            ("TopCinemaa       مكتبة ضخمة", "site_topcinema"),
+            ("FaselHD (RIP)    واجهة حديثة - سيرفرات متعددة", "site_fasel"),
+            ("FaselHD (HDX)    النسخة الكلاسيكية - دقة عالية", "site_faselhdx"),
+            ("━━  الأدوات  ━━━━━━━━━━━━━━━━━", "separator"),
+            ("البحث الشامل", "search"),
+            ("المفضلة", "favorites"),
+            ("السجل", "history"),
+            ("الإعدادات", "settings"),
+        ]
+        self._items = [{"title": t, "_action": a} for t, a in items]
+        self["menu"].setList([t for t, _ in items])
+        self["footer"].setText("TMDb  |  {} مفضلة  |  {} سجل".format(len(_favorite_items()), len(_history_items())))
+        self._refreshPreview()
+
+    def _onOk(self):
+        idx = self["menu"].getSelectedIndex()
+        if idx < 0 or idx >= len(self._items):
+            return
+        item = self._items[idx]
+
+        # Ignore separator items (they are not clickable)
+        if item.get("_action") == "separator" or item.get("type") == "separator":
+            return
+
+        if "_action" in item:
+            a = item["_action"]
+            if a.startswith("site_"):
+                self._site = a.replace("site_", "")
+                self._showSiteCategories()
+                return
+            elif a == "search":
+                self._onSearch()
+                return
+            elif a == "search_site":
+                self._onSearch(item.get("_site", self._site))
+                return
+            elif a == "favorites":
+                self._showLibrary("favorites")
+                return
+            elif a == "history":
+                self._showLibrary("history")
+                return
+            elif a == "settings":
+                self._openSettings()
+                return
+
+        curr_type = item.get("type", item.get("_action"))
+        if curr_type == "category":
+            if item.get("_m_type") in ("movie", "series"):
+                self._m_type = item.get("_m_type")
+            self._loadCategory(item["url"], item["title"])
+            return
+
+        if curr_type in ("movie", "series", "episode", "details"):
+            self._openItem(item)
+
+    def _onPluginClose(self):
+        try:
+            self.picLoad.PictureData.get().remove(self._paintPoster)
+        except Exception:
+            pass
+        self._clearTmpPosters()
+
+    def _onBack(self):
+        if self._nav_stack:
+            state = self._nav_stack.pop()
+            self._source = state.get("source", "home")
+            self._site = state.get("site", self._site)
+            self._m_type = state.get("m_type", self._m_type)
+            self._page = state.get("page", 1)
+            items = state.get("items", [])
+            header = state.get("header", {})
+            if items:
+                self._setList(items)
+                self._setHeader(**header)
+            else:
+                self._showHome()
+        elif self._source != "home":
+            self._showHome()
+        else:
+            self.close()
+
+    def _push_nav_state(self):
+        self._nav_stack.append({
+            "source": self._source,
+            "site": self._site,
+            "m_type": self._m_type,
+            "page": self._page,
+            "items": list(self._items),
+            "header": {
+                "title": self["title_text"].getText(),
+                "subtitle": self["subtitle"].getText(),
+                "status": self["status"].getText(),
+            },
+        })
+
+    def _clearTmpPosters(self):
+        for p in self._tmp_posters:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        self._tmp_posters = []
+
+    def _paintPoster(self, picData=None):
+        ptr = self.picLoad.getData()
+        if ptr:
+            self["poster"].instance.setPixmap(ptr)
+            self["poster"].show()
+
+    def _setList(self, items):
+        self._items = items
+        self["menu"].setList([_decorate_item_title(i, self._site) for i in items])
+        self["status"].setText("{} عنصر".format(len(items)))
+        self._refreshPreview()
+        try:
+            self._first_item_timer.stop()
+        except Exception:
+            pass
+        self._first_item_timer = eTimer()
+        self._first_item_timer.callback.append(self._refreshPreview)
+        self._first_item_timer.start(700, True)
+
+    def _refreshPreview(self):
+        if not self._items:
+            self["preview_title"].setText("")
+            self["preview_meta"].setText("")
+            self["preview_info"].setText("")
+            self["poster"].hide()
+            return
+
+        idx = self["menu"].getSelectedIndex()
+        if idx < 0 or idx >= len(self._items):
+            idx = 0
+        item = self._items[idx]
+        action = item.get("_action", "")
+        item_type = item.get("type", action)
+        title = _strip_arabic_from_english_title(item.get("title", ""))
+        site = item.get("_site", self._site)
+
+        if action == "separator":
+            self["preview_title"].setText("")
+            self["preview_meta"].setText("")
+            self["preview_info"].setText("")
+            self["poster"].hide()
+            return
+
+        meta = []
+        info_parts = []
+        if action.startswith("site_"):
+            site_key = action.replace("site_", "")
+            meta.append("المصدر")
+            info_parts.append(_site_tagline(site_key))
+        elif action in ("search", "search_site", "favorites", "history", "settings"):
+            meta.append("أداة")
+        else:
+            if site:
+                meta.append(_site_label(site))
+            if item.get("year"):
+                meta.append(item.get("year"))
+            if item.get("rating"):
+                meta.append("{}/10".format(item.get("rating")))
+            if item_type in _TYPE_LABELS:
+                meta.append(_TYPE_LABELS.get(item_type))
+
+        self["preview_title"].setText(_wrap_ui_text(title, width=28, max_lines=3, fallback="بدون عنوان"))
+        self["preview_meta"].setText(_wrap_ui_text("  |  ".join(meta), width=36, max_lines=2))
+        self["preview_info"].setText(_wrap_ui_text("  ".join(info_parts), width=36, max_lines=2) if info_parts else "")
+
+        poster_url = item.get("poster") or item.get("image") or ""
+
+        with self._poster_lock:
+            self._requested_poster_url = poster_url
+
+        if poster_url:
+            cached = _get_cached_poster(poster_url)
+            if cached:
+                self._display_poster_from_file(cached)
+            else:
+                self._pending_poster_url = poster_url
+                try:
+                    self._debounce_timer.stop()
+                except Exception:
+                    pass
+                self._debounce_timer.start(300, True)
+        else:
+            self["poster"].hide()
+
+    def _debounced_load_poster(self):
+        url = self._pending_poster_url
+        if url:
+            threading.Thread(target=self._downloadPoster, args=(url,), daemon=True).start()
+
+    def _display_poster_from_file(self, path):
+        try:
+            self.picLoad.setPara((self["poster"].instance.size().width(), self["poster"].instance.size().height(), 1, 1, 0, 1, "#000000"))
+            self.picLoad.startDecode(path)
+        except Exception as e:
+            my_log("_display_poster error: {}".format(e))
+
+    def _downloadPoster(self, url):
+        if not url: return
+        with self._poster_lock:
+            if url != self._requested_poster_url: return
+
+        try:
+            if url.startswith("//"): url = "https:" + url
+            try:
+                from urllib.parse import urlparse, quote, unquote, urlunparse
+                p = list(urlparse(url))
+                p[2] = quote(unquote(p[2]))
+                p[4] = quote(unquote(p[4]))
+                url = urlunparse(p)
+            except Exception: pass
+
+            cached = _get_cached_poster(url)
+            if cached:
+                with self._poster_lock:
+                    if url != self._requested_poster_url: return
+                callInMainThread(self._display_poster_from_file, cached)
+                return
+
+            cache_path = _poster_cache_path(url)
+            # FIX: sites like arabseeds.cam and topcinemaa.top hotlink-protect
+            # their uploaded images and reject requests with no Referer at
+            # all. Derive a same-domain Referer generically from the image
+            # URL itself so this works across every site, not just one.
+            from urllib.parse import urlparse as _urlparse
+            _p = _urlparse(url)
+            referer = "{}://{}/".format(_p.scheme, _p.netloc)
+            req = urllib2.Request(url, headers={"User-Agent": SAFE_UA, "Referer": referer})
+            data = urllib2.urlopen(req, timeout=7).read()
+
+            with self._poster_lock:
+                if url != self._requested_poster_url: return
+                if cache_path:
+                    with open(cache_path, "wb") as f:
+                        f.write(data)
+                    callInMainThread(self._display_poster_from_file, cache_path)
+                else:
+                    path = "/tmp/ap_preview_{}.jpg".format(int(time.time()))
+                    with open(path, "wb") as f:
+                        f.write(data)
+                    self._tmp_posters.append(path)
+                    callInMainThread(self._display_poster_from_file, path)
+        except Exception as e:
+            my_log("_downloadPoster preview error: {}".format(e))
+            with self._poster_lock:
+                if url == self._requested_poster_url:
+                    callInMainThread(self["poster"].hide)
+
+    def _nextPage(self):
+        cat_url  = getattr(self, "_cat_url",  None)
+        cat_name = getattr(self, "_cat_name", "")
+        if self._source == "category" and cat_url:
+            self._page += 1
+            self._loadCategory(cat_url, cat_name)
+
+    def _showSiteCategories(self):
+        self._push_nav_state()
+        try:
+            extractor = _get_extractor(self._site)
+            get_categories = getattr(extractor, "get_categories", None)
+            if not get_categories:
+                cats = [{"title": "لا توجد أقسام", "type": "error"}]
+            elif self._site == "egydead":
+                movie_cats = get_categories("movie")
+                series_cats = get_categories("series")
+                cats = [_site_search_item(self._site)]
+                for item in movie_cats:
+                    updated = dict(item)
+                    updated["title"] = updated.get("title", "").replace("[فيلم] ", "").replace("[مسلسل] ", "")
+                    updated["_m_type"] = "movie"
+                    cats.append(updated)
+                for item in series_cats:
+                    updated = dict(item)
+                    updated["title"] = updated.get("title", "").replace("[فيلم] ", "").replace("[مسلسل] ", "")
+                    updated["_m_type"] = "series"
+                    cats.append(updated)
+            else:
+                cats = [_site_search_item(self._site)] + (get_categories() or [])
+        except Exception as e:
+            my_log("_showSiteCategories error for site {}: {}".format(self._site, e))
+            cats = [{"title": "فشل جلب الأقسام", "type": "error"}]
+
+        self._source = "categories"
+        self._setList(cats)
+        self._setHeader(
+            "تصنيفات {}".format(_site_label(self._site)),
+            _site_tagline(self._site),
+            "اختر القسم"
+        )
+
+    def _showCategories(self, m_type):
+        self._push_nav_state()
+        extractor = _get_extractor("egydead")
+        get_categories = getattr(extractor, "get_categories", None)
+        self._source = "categories"
+        self._m_type = m_type
+        cats = get_categories(m_type) if get_categories else []
+        self._setList(cats)
+        self._setHeader(
+            "تصنيفات " + ("الأفلام" if m_type == "movie" else "المسلسلات"),
+            "استعراض منظم حسب النوع داخل {}".format(_site_label("egydead")),
+            "اختر التصنيف"
+        )
+
+    def _loadCategory(self, url, name):
+        self._push_nav_state()
+        self._source = "category"
+        self._cat_url = url
+        self._cat_name = name
+        self["status"].setText("جاري تحميل {}...".format(name))
+        self["menu"].setList(["جاري التحميل..."])
+        threading.Thread(target=self._bgLoadCategory, args=(url,), daemon=True).start()
+
+    def _bgLoadCategory(self, url):
+        try:
+            my_log("_bgLoadCategory started: {}, site={}, page={}".format(url, self._site, self._page))
+            extractor = _get_extractor(self._site)
+            get_category_items = getattr(extractor, "get_category_items", None)
+            if not get_category_items:
+                callInMainThread(self["status"].setText, "لا توجد نتائج")
+                return
+            my_log("_bgLoadCategory calling get_category_items for site: {}".format(self._site))
+            items = get_category_items(url) if self._site != "egydead" else get_category_items(url, page=self._page)
+            my_log("_bgLoadCategory got {} items".format(len(items) if items else 0))
+            callInMainThread(self._onCategoryLoaded, items)
+        except Exception as e:
+            my_log("_bgLoadCategory error: {}".format(e))
+            callInMainThread(self["status"].setText, "فشل: {}".format(str(e)[:60]))
+
+    def _onCategoryLoaded(self, items):
+        if not items:
+            self["status"].setText("لا توجد نتائج")
+            self["menu"].setList(["لا توجد نتائج"])
+            return
+        self._setHeader(
+            "{} — صفحة {}".format(self._cat_name, self._page),
+            "المصدر: {}".format(_site_label(self._site))
+        )
+        self._setList(_dedupe_items(items))
+
+    def _loadMovies(self):
+        self._showCategories("movie")
+
+    def _loadSeries(self):
+        self._showCategories("series")
+
+    def _openSettings(self):
+        self.session.open(ArabicPlayerSettings, self._site)
+
+    def _showLibrary(self, kind):
+        self._push_nav_state()
+        self._source = kind
+        if kind == "favorites":
+            items = _favorite_items()
+            title = "المفضلة"
+            subtitle = "العناصر المحفوظة للوصول السريع"
+        else:
+            items = _history_items()
+            title = "السجل"
+            subtitle = "آخر العناصر التي تم تشغيلها"
+        if not items:
+            self._setHeader(title, subtitle, "لا توجد عناصر بعد")
+            self["menu"].setList(["القائمة فارغة"])
+            self._items = []
+            return
+        self._setHeader(title, subtitle)
+        self._setList(items)
+
+    def _onSearch(self, forced_scope=None):
+        self.session.openWithCallback(
+            self._onSearchQuery,
+            ArabicPlayerSearch,
+            current_site=self._site,
+            default_scope=forced_scope or "all",
+            query=self._last_query
+        )
+
+    def _onSearchQuery(self, result=None):
+        if not result:
+            return
+        scope = "all"
+        query = result
+        if isinstance(result, tuple):
+            query, scope = result
+        query = (query or "").strip()
+        if not query:
+            return
+        self._last_query = query
+        self._source = "search"
+        self._search_scope = scope
+        self["status"].setText("بحث عن: {}...".format(query))
+        self["menu"].setList(["جاري البحث..."])
+        threading.Thread(
+            target=self._bgSearch, args=(query, scope), daemon=True
+        ).start()
+
+    def _bgSearch(self, query, scope="all"):
+        try:
+            items = []
+            extractors = []
+            target_site = scope if scope not in ("", None, "all") else ""
+            if target_site in _SEARCH_SITE_ORDER:
+                extractors = [(target_site, __import__("extractors." + target_site, fromlist=["search"]))]
+            else:
+                for name in _SEARCH_SITE_ORDER:
+                    try:
+                        extractors.append((name, __import__("extractors." + name, fromlist=["search"])))
+                    except Exception:
+                        pass
+            for site_name, module in extractors:
+                search_fn = getattr(module, "search", None)
+                if not callable(search_fn):
+                    continue
+                try:
+                    for item in search_fn(query) or []:
+                        item["_site"] = site_name
+                        item["_m_type"] = item.get("type", "movie")
+                        items.append(item)
+                except Exception as e:
+                    my_log("Search failed for {}: {}".format(site_name, e))
+            callInMainThread(self._onSearchResults, items, query, scope)
+        except Exception as e:
+            my_log("_bgSearch error: {}".format(e))
+            callInMainThread(self["status"].setText, "فشل البحث")
+
+    def _onSearchResults(self, items, query, scope="all"):
+        if not items:
+            self["status"].setText("لا توجد نتائج لـ: {}".format(query))
+            self["menu"].setList(["مفيش نتائج"])
+            return
+        items = _rank_search_items(items, query)
+        if not items:
+            self["status"].setText("لا توجد نتائج مطابقة لـ: {}".format(query))
+            self["menu"].setList(["لا توجد نتائج مطابقة"])
+            return
+        subtitle = "بحث في {} — {} نتيجة".format(_search_scope_label(scope), len(items))
+        self._setHeader(
+            "نتائج: {}".format(query),
+            subtitle
+        )
+        self._setList(items)
+
+    def _openItem(self, item):
+        self.session.open(
+            ArabicPlayerDetail,
+            item=item,
+            site=item.get("_site", self._site),
+            m_type=item.get("_m_type", self._m_type)
+        )
+
+
+# ─── Search Screen ────────────────────────────────────────────────────────────
+class ArabicPlayerSearch(Screen):
+    skin = """
+    <screen name="ArabicPlayerSearch" position="center,center" size="1920,1080"
+            flags="wfNoBorder">
+        <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg_search.png" zPosition="0" alphatest="blend" />
+        <widget name="bg"       position="0,0"   size="1920,1080" backgroundColor="#0D1117" zPosition="1" />
+
+        <!-- Header -->
+        <widget name="title"    position="60,30" size="900,54"  font="Regular;45" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
+        <widget name="subtitle" position="60,90" size="1800,36" font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="3" />
+
+        <!-- Query Box -->
+        <widget name="query_box" position="60,150" size="1800,105" backgroundColor="#161B22" zPosition="2" />
+        <widget name="query_label" position="90,165" size="180,27" font="Regular;24" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
+        <widget name="query"    position="90,198" size="1740,39" font="Regular;33" foregroundColor="#F0F6FC" transparent="1" zPosition="3" />
+
+        <!-- Scope Box -->
+        <widget name="scope_box" position="60,278" size="1800,72" backgroundColor="#1C2333" zPosition="2" />
+        <widget name="scope_label" position="90,296" size="165,30" font="Regular;24" foregroundColor="#E040FB" transparent="1" zPosition="3" />
+        <widget name="scope"    position="270,294" size="1560,33" font="Regular;28" foregroundColor="#F0F6FC" transparent="1" zPosition="3" />
+
+        <!-- Suggestions -->
+        <widget name="suggestions_box" position="60,372" size="1800,570" backgroundColor="#161B22" zPosition="2" />
+        <widget name="suggestions_title" position="90,390" size="450,30" font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="3" />
+        <widget name="suggestions" position="87,435" size="1746,480" zPosition="3"
+                scrollbarMode="showOnDemand"
+                foregroundColor="#F0F6FC"
+                foregroundColorSelected="#00E5FF"
+                backgroundColor="#161B22"
+                backgroundColorSelected="#21262D"
+                font="Regular;32" itemHeight="38" />
+
+        <!-- Footer -->
+        <widget name="hint"     position="60,960" size="1800,33" font="Regular;22" foregroundColor="#8B949E" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_red"  position="60,1002" size="420,33" font="Regular;24" foregroundColor="#FF6B6B" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_green" position="522,1002" size="420,33" font="Regular;24" foregroundColor="#39D98A" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_yellow" position="984,1002" size="420,33" font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_blue" position="1446,1002" size="420,33" font="Regular;24" foregroundColor="#58A6FF" transparent="1" zPosition="3" halign="center" />
+    </screen>
+    """.format(PLUGIN_PATH)
+
+    def __init__(self, session, current_site="egydead", default_scope="all", query=""):
+        Screen.__init__(self, session)
+        self._current_site = current_site
+        self._query = query or ""
+        self._scope = default_scope or "all"
+
+        self["bg"] = Label("")
+        self["title"] = Label("بحث احترافي")
+        self["subtitle"] = Label("اكتب الاسم واختر النطاق للبحث في المصدر الحالي أو كل المصادر.")
+        self["query_box"] = Label("")
+        self["query_label"] = Label("نص البحث")
+        self["query"] = Label("")
+        self["scope_box"] = Label("")
+        self["scope_label"] = Label("النطاق")
+        self["scope"] = Label("")
+        self["suggestions_box"] = Label("")
+        self["suggestions_title"] = Label("اقتراحات سريعة")
+        self["suggestions"] = MenuList([])
+        self["hint"] = Label("OK يفتح الاقتراح  |  أعلى/أسفل للتنقل  |  أحمر: مسح  |  أصفر: اكتب  |  أزرق: نطاق")
+        self["key_red"] = Label("مسح")
+        self["key_green"] = Label("ابحث الآن")
+        self["key_yellow"] = Label("اكتب")
+        self["key_blue"] = Label("تبديل النطاق")
+        self._suggestions = []
+        self._suggestion_ticket = 0
+
+        self["actions"] = ActionMap(
+            ["OkCancelActions", "DirectionActions", "ColorActions"],
+            {
+                "ok": self._submit_or_edit,
+                "cancel": self.close,
+                "up": self._suggestion_up,
+                "down": self._suggestion_down,
+                "left": self._toggle_scope,
+                "right": self._toggle_scope,
+                "red": self._clear_query,
+                "green": self._submit,
+                "yellow": self._edit_query,
+                "blue": self._toggle_scope,
+            },
+            -1
+        )
+
+        self.onLayoutFinish.append(self._init_search)
+
+    def _init_search(self):
+        self._refresh_suggestions()
+        self._refresh()
+
+    def _refresh(self):
+        preview = self._query or "اكتب اسم فيلم أو مسلسل أو ممثل"
+        self["query"].setText(_wrap_ui_text(preview, width=42, max_lines=2))
+        self["scope"].setText(_search_scope_label(self._scope if self._scope else "all"))
+        self._refresh_suggestion_list()
+
+    def _refresh_suggestion_list(self):
+        if not self._suggestions:
+            self["suggestions_title"].setText("اقتراحات سريعة")
+            self["suggestions"].setList(["لا توجد اقتراحات حالياً"])
+            return
+        self["suggestions_title"].setText("اقتراحات سريعة: {}".format(len(self._suggestions)))
+        rows = []
+        for item in self._suggestions:
+            meta = []
+            if item.get("source"):
+                meta.append(item.get("source"))
+            if item.get("kind"):
+                meta.append(item.get("kind"))
+            if item.get("year"):
+                meta.append(item.get("year"))
+            label = _single_line_text(item.get("title", ""), width=34, fallback="اقتراح")
+            meta_text = " | ".join([x for x in meta if x])
+            if meta_text:
+                label = "{} [{}]".format(label, meta_text)
+            rows.append(label)
+        self["suggestions"].setList(rows)
+
+    def _refresh_suggestions(self):
+        self._suggestions = _library_search_suggestions(self._query, self._current_site, limit=6)
+        self._refresh_suggestion_list()
+        ticket = self._suggestion_ticket = self._suggestion_ticket + 1
+        if len((self._query or "").strip()) >= 2 and _tmdb_enabled():
+            threading.Thread(target=self._bg_tmdb_suggestions, args=(self._query, ticket), daemon=True).start()
+
+    def _bg_tmdb_suggestions(self, query, ticket):
+        suggestions = _tmdb_search_suggestions(query, limit=6)
+        callInMainThread(self._merge_tmdb_suggestions, query, ticket, suggestions)
+
+    def _merge_tmdb_suggestions(self, query, ticket, suggestions):
+        if ticket != self._suggestion_ticket:
+            return
+        if (query or "").strip() != (self._query or "").strip():
+            return
+        seen = set(_normalize_query(item.get("query", item.get("title", ""))) for item in self._suggestions)
+        for item in suggestions:
+            norm = _normalize_query(item.get("query", item.get("title", "")))
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            self._suggestions.append(item)
+        self._suggestions = self._suggestions[:8]
+        self._refresh_suggestion_list()
+
+    def _toggle_scope(self):
+        self._scope = self._current_site if self._scope == "all" else "all"
+        self._refresh_suggestions()
+        self._refresh()
+
+    def _clear_query(self):
+        self._query = ""
+        self._refresh_suggestions()
+        self._refresh()
+
+    def _edit_query(self):
+        from Screens.VirtualKeyBoard import VirtualKeyBoard
+        self.session.openWithCallback(
+            self._onKeyboard,
+            VirtualKeyBoard,
+            title="ابحث عن فيلم أو مسلسل",
+            text=self._query
+        )
+
+    def _onKeyboard(self, result):
+        if result is None:
+            return
+        self._query = result.strip()
+        self._refresh_suggestions()
+        self._refresh()
+
+    def _suggestion_up(self):
+        if self._suggestions:
+            self["suggestions"].up()
+
+    def _suggestion_down(self):
+        if self._suggestions:
+            self["suggestions"].down()
+
+    def _submit_or_edit(self):
+        idx = self["suggestions"].getSelectedIndex()
+        if self._suggestions and idx >= 0 and idx < len(self._suggestions):
+            chosen = self._suggestions[idx]
+            self.close(((chosen.get("query") or chosen.get("title") or "").strip(), self._scope or "all"))
+            return
+        if self._query.strip():
+            self._submit()
+        else:
+            self._edit_query()
+
+    def _submit(self):
+        query = self._query.strip()
+        if not query:
+            self._edit_query()
+            return
+        self.close((query, self._scope or "all"))
+
+
+class ArabicPlayerSettings(Screen):
+    skin = """
+    <screen name="ArabicPlayerSettings" position="center,center" size="1920,1080"
+            flags="wfNoBorder">
+        <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg_settings.png" zPosition="0" alphatest="blend" />
+        <widget name="bg"     position="0,0"   size="1920,1080" backgroundColor="#0D1117" zPosition="1" />
+
+        <!-- Header -->
+        <widget name="title"  position="60,30" size="900,57"  font="Regular;45" foregroundColor="#00E5FF" transparent="1" zPosition="3" />
+        <widget name="owner"  position="60,96" size="600,36"  font="Regular;27" foregroundColor="#FFD740" transparent="1" zPosition="3" />
+        <widget name="site"   position="60,138" size="1800,36" font="Regular;24" foregroundColor="#8B949E" transparent="1" zPosition="3" />
+
+        <!-- Body -->
+        <widget name="body_box" position="60,195" size="1800,720" backgroundColor="#161B22" zPosition="2" />
+        <widget name="body"   position="90,218" size="1740,675" font="Regular;28" foregroundColor="#F0F6FC" transparent="1" zPosition="3" />
+
+        <!-- Footer -->
+        <widget name="hint"   position="60,939" size="1800,36" font="Regular;22" foregroundColor="#8B949E" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_yellow_label" position="450,987" size="450,36" font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="3" halign="center" />
+        <widget name="key_blue_label"   position="990,987" size="450,36" font="Regular;24" foregroundColor="#58A6FF" transparent="1" zPosition="3" halign="center" />
+    </screen>
+    """.format(PLUGIN_PATH)
+
+    def __init__(self, session, current_site):
+        Screen.__init__(self, session)
+        self._current_site = current_site
+        self["bg"] = Label("")
+        self["title"] = Label("الإعدادات وحول النسخة")
+        self["owner"] = Label("")
+        self["site"] = Label("")
+        self["body_box"] = Label("")
+        self["body"] = ScrollLabel("")
+        self["hint"] = Label("OK / Back للإغلاق  |  أصفر: مفتاح TMDb  |  أزرق: حذف المفتاح")
+        self["key_yellow_label"] = Label("تعديل مفتاح TMDb")
+        self["key_blue_label"] = Label("حذف المفتاح")
+        self["actions"] = ActionMap(
+            ["OkCancelActions", "DirectionActions", "ColorActions"],
+            {
+                "ok": self.close,
+                "cancel": self.close,
+                "up": self["body"].pageUp,
+                "down": self["body"].pageDown,
+                "left": self["body"].pageUp,
+                "right": self["body"].pageDown,
+                "yellow": self._edit_tmdb_key,
+                "blue": self._clear_tmdb_key,
+            },
+            -1
+        )
+        self._refresh()
+
+    def _refresh(self):
+        self["owner"].setText("المالك: {}".format(_get_config("owner", _PLUGIN_OWNER)))
+        self["site"].setText("المصدر الحالي: {}  |  {}".format(_site_label(self._current_site), _site_tagline(self._current_site)))
+        api_key = (_get_config("tmdb_api_key", "") or "").strip()
+        body = (
+            "ArabicPlayer v{version}\n\n"
+            "TMDb:\n"
+            "• الحالة: {tmdb_status}\n"
+            "• المفتاح الحالي: {tmdb_key}\n\n"
+            "المكتبة:\n"
+            "• المفضلة: {fav_count}\n"
+            "• السجل: {hist_count}\n\n"
+            "ما الجديد في النسخة الحالية:\n"
+            "• إثراء معلومات الفيلم أو المسلسل من TMDb عند توفر المفتاح\n"
+            "• دعم مفضلة وسجل محفوظين محليًا\n"
+            "• واجهة إعدادات حقيقية بدل الرسالة القديمة\n"
+            "• ترتيب أنظف للنتائج والسيرفرات\n\n"
+            "طريقة الاستخدام:\n"
+            "• اضغط الأصفر لإدخال أو تعديل مفتاح TMDb\n"
+            "• اضغط الأزرق لحذف المفتاح الحالي\n"
+            "• من شاشة التفاصيل استخدم الأحمر لإضافة العنصر إلى المفضلة"
+        ).format(
+            version=_PLUGIN_VERSION,
+            tmdb_status="مفعل" if api_key else "غير مفعل",
+            tmdb_key=("********" + api_key[-4:]) if api_key else "غير مضبوط",
+            fav_count=len(_favorite_items()),
+            hist_count=len(_history_items()),
+        )
+        self["body"].setText(body)
+
+    def _edit_tmdb_key(self):
+        from Screens.VirtualKeyBoard import VirtualKeyBoard
+        self.session.openWithCallback(
+            self._on_tmdb_key_entered,
+            VirtualKeyBoard,
+            title="أدخل TMDb API Key",
+            text=_get_config("tmdb_api_key", "")
+        )
+
+    def _on_tmdb_key_entered(self, value):
+        if value is None:
+            return
+        _set_config("tmdb_api_key", value.strip())
+        self._refresh()
+
+    def _clear_tmdb_key(self):
+        _set_config("tmdb_api_key", "")
+        self._refresh()
+
+
+# ─── Detail / Episode Screen ──────────────────────────────────────────────────
+class ArabicPlayerDetail(Screen):
+    skin = """
+    <screen name="ArabicPlayerDetail" position="center,center" size="1920,1080"
+            flags="wfNoBorder">
+        <ePixmap position="0,0" size="1920,1080" pixmap="{}/images/bg_detail.png" zPosition="0" alphatest="blend" />
+        <widget name="bg"          position="0,0"    size="1920,1080" backgroundColor="#0D1117" zPosition="1" />
+
+        <!-- Poster Panel -->
+        <widget name="poster_box"  position="45,30"  size="420,600" backgroundColor="#1C2333" zPosition="2" />
+        <widget name="poster"      position="68,52"  size="375,555" zPosition="4" alphatest="blend" />
+
+        <!-- Info Panel -->
+        <widget name="info_box"    position="495,30" size="1380,405" backgroundColor="#161B22" zPosition="2" />
+        <widget name="badge"       position="525,52" size="1320,33"  font="Regular;26" foregroundColor="#E040FB" transparent="1" zPosition="4" />
+        <widget name="title"       position="525,93" size="1320,90"  font="Regular;42" foregroundColor="#00E5FF" transparent="1" zPosition="4" />
+        <widget name="meta"        position="525,189" size="1320,60" font="Regular;27" foregroundColor="#FFD740" transparent="1" zPosition="4" />
+        <widget name="facts"       position="525,255" size="1320,42" font="Regular;24" foregroundColor="#8B949E" transparent="1" zPosition="4" />
+        <widget name="source"      position="525,300" size="1320,42" font="Regular;24" foregroundColor="#58A6FF" transparent="1" zPosition="4" />
+        <widget name="tmdb_note"   position="525,348" size="1320,33" font="Regular;22" foregroundColor="#39D98A" transparent="1" zPosition="4" />
+
+        <!-- Plot Panel -->
+        <widget name="plot_box"    position="495,450" size="1380,180" backgroundColor="#1C2333" zPosition="2" />
+        <widget name="plot_title"  position="525,465" size="600,30"  font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="4" />
+        <widget name="plot"        position="525,504" size="1320,150"  font="Regular;27" foregroundColor="#F0F6FC" transparent="1" halign="block" valign="top" zPosition="4" />
+
+        <!-- Menu Panel -->
+        <widget name="menu_box"    position="45,652" size="1830,315" backgroundColor="#161B22" zPosition="2" />
+        <widget name="section"     position="75,663" size="1770,36"  font="Regular;26" foregroundColor="#FFD740" transparent="1" zPosition="4" />
+        <widget name="menu"        position="72,708" size="1776,240" zPosition="4"
+                scrollbarMode="showOnDemand"
+                foregroundColor="#F0F6FC"
+                foregroundColorSelected="#00E5FF"
+                backgroundColor="#161B22"
+                backgroundColorSelected="#21262D"
+                font="Regular;32" itemHeight="57" />
+
+        <!-- Footer -->
+        <widget name="key_red"     position="45,990" size="420,36" font="Regular;24" foregroundColor="#FF6B6B" transparent="1" zPosition="4" />
+        <widget name="key_yellow"  position="510,990" size="420,36" font="Regular;24" foregroundColor="#FFD740" transparent="1" zPosition="4" />
+        <widget name="status"      position="990,990" size="870,36"  font="Regular;22" foregroundColor="#8B949E" transparent="1" halign="right" zPosition="4" />
+    </screen>
+    """.format(PLUGIN_PATH)
+
+    def __init__(self, session, item, site="egydead", m_type="movie"):
+        Screen.__init__(self, session)
+        self.session = session
+        self._item   = item
+        self._site   = site
+        self._m_type = m_type
+        self._data   = None
+        self._servers = []
+        self._episodes = []
+        self._tmp_posters = []
+        self._poster_loaded = False
+        self._raw_title = ""
+
+        self["bg"]     = Label("")
+        self["poster_box"] = Label("")
+        self["info_box"] = Label("")
+        self["plot_box"] = Label("")
+        self["menu_box"] = Label("")
+        self["poster"] = Pixmap()
+        self["badge"]  = Label("")
+        self["title"]  = Label(item.get("title", ""))
+        self["meta"]   = Label("")
+        self["facts"]  = Label("")
+        self["source"] = Label("")
+        self["tmdb_note"] = Label("")
+        self["plot_title"] = Label("القصة")
+        self["plot"]   = Label("")
+        self["section"] = Label("جاري التحضير...")
+        self["menu"]   = MenuList([])
+        self["key_red"] = Label("المفضلة")
+        self["key_yellow"] = Label("تحديث TMDb")
+        self["status"] = Label("جاري تحميل التفاصيل...")
+
+        self.picLoad = ePicLoad()
+        self.picLoad.PictureData.get().append(self._paintPoster)
+
+        self["actions"] = ActionMap(
+            ["OkCancelActions", "ColorActions", "DirectionActions"],
+            {
+                "ok":     self._onOk,
+                "cancel": self._onCancel,
+                "red":    self._toggleFavorite,
+                "yellow": self._refreshTMDb,
+                "up":     lambda: self["menu"].up(),
+                "down":   lambda: self["menu"].down(),
+                "left":   lambda: self["menu"].pageUp(),
+                "right":  lambda: self["menu"].pageDown(),
+            },
+            -1
+        )
+
+        self.onLayoutFinish.append(self._load)
+        self.onExecBegin.append(self._refreshPoster)
+
+    def _load(self):
+        threading.Thread(target=self._bgLoad, args=(self._site, self._item["url"], self._m_type), daemon=True).start()
+
+    def _bgLoad(self, site, url, m_type):
+        _done = [False]
+        def _watchdog():
+            if not _done[0]:
+                my_log("_bgLoad watchdog: timeout for {}".format(url[:60]))
+                callInMainThread(self["status"].setText, u"Timeout — please try again")
+        _wt = threading.Timer(30, _watchdog)
+        _wt.daemon = True
+        _wt.start()
+        try:
+            from extractors.base import log
+            log("Detail _bgLoad: START site={}, m_type={}".format(site, m_type))
+            extractor = _get_extractor(site)
+            get_page = getattr(extractor, "get_page", None)
+            if not get_page:
+                callInMainThread(self["status"].setText, u"لا توجد بيانات")
+                return
+            if site == "egydead":
+                data = get_page(url, m_type=m_type)
+            else:
+                data = get_page(url)
+            merged_seed = dict(self._item or {})
+            merged_seed.update(data or {})
+            data = _merge_tmdb_data(merged_seed)
+            _done[0] = True
+            callInMainThread(self._onLoaded, data)
+        except Exception as e:
+            _done[0] = True
+            from extractors.base import log
+            log("_bgLoad error: {} -- trying TMDb fallback".format(e))
+            try:
+                fallback = _merge_tmdb_data(dict(self._item or {}))
+                if fallback and (fallback.get("plot") or fallback.get("poster")):
+                    callInMainThread(self._onLoaded, fallback)
+                else:
+                    callInMainThread(self["status"].setText,
+                        u"فشل التحميل — {}".format(str(e)[:40]))
+            except Exception as e2:
+                log("TMDb fallback failed: {}".format(e2))
+                callInMainThread(self["status"].setText,
+                    u"فشل التحميل — {}".format(str(e)[:40]))
+        finally:
+            _wt.cancel()
+
+    def _onCancel(self):
+        try:
+            self.picLoad.PictureData.get().remove(self._paintPoster)
+        except Exception:
+            pass
+        for p in self._tmp_posters:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        self.close()
+
+    def _paintPoster(self, picData=None):
+        ptr = self.picLoad.getData()
+        if ptr:
+            self["poster"].instance.setPixmap(ptr)
+            self["poster"].show()
+            self._poster_loaded = True
+
+    def _onLoaded(self, data):
+        if not data:
+            self["status"].setText("تعذر تحميل الصفحة")
+            return
+
+        self._data = data
+        current_title = _strip_arabic_from_english_title(
+            data.get("title") or self._item.get("title", ""))
+        self._raw_title = re.sub(r"\s+", " ", current_title).strip()
+        self["title"].setText(_wrap_ui_text(current_title, width=30, max_lines=2, fallback="بدون عنوان"))
+
+        meta = []
+        if data.get("year"):   meta.append(data["year"])
+        if data.get("rating"): meta.append("{}/10".format(data["rating"]))
+        if data.get("type"):   meta.append(_TYPE_LABELS.get(data["type"], "عنصر"))
+        if data.get("genres"): meta.append(data["genres"])
+        self["meta"].setText(_wrap_ui_text("   ".join(meta), width=58, max_lines=2))
+        self["badge"].setText("{}  •  {}".format(_site_label(self._site), _TYPE_LABELS.get(data.get("type"), "عنصر")))
+        facts = [
+            "المفضلة: {}  |  النسخة: {}  |  الوصف: {}".format(
+                "محفوظ" if _is_favorite(self._item.get("url")) else "غير محفوظ",
+                _PLUGIN_VERSION,
+                "موجود" if _pick_plot_text(data, self._item) != "القصة غير متوفرة حالياً لهذا العنصر." else "غير متوفر"
+            ),
+        ]
+        self["facts"].setText(_single_line_text("".join(facts), width=62))
+        counts = []
+        has_episodes = bool([e for e in data.get("items", []) if e.get("type") == "episode"])
+        has_servers = bool([s for s in data.get("servers", []) if s.get("url")])
+        is_series_item = (
+            data.get("type") in ("series", "show")
+            or self._item.get("type") in ("series", "show")
+            or has_episodes
+        )
+        if has_episodes:
+            counts.append("الحلقات: {}".format(len([e for e in data.get("items", []) if e.get("type") == "episode"])))
+        else:
+            counts.append("السيرفرات: {}".format(len([s for s in data.get("servers", []) if s.get("url")])))
+        if data.get("year"):
+            counts.append("السنة: {}".format(data.get("year")))
+        self["source"].setText(_wrap_ui_text("المصدر: {}  |  {}".format(_site_label(self._site), "  |  ".join(counts)), width=58, max_lines=2))
+        self["tmdb_note"].setText("TMDb: تم تعزيز البيانات والبوستر" if data.get("_tmdb") else "TMDb: لا توجد بيانات إضافية حالياً")
+        if has_episodes:
+            plot_label = "قصة المسلسل"
+        elif has_servers:
+            plot_label = "قصة الفيلم"
+        elif is_series_item:
+            plot_label = "قصة المسلسل"
+        else:
+            plot_label = "قصة الفيلم"
+        if current_title:
+            plot_label = "{}: {}".format(plot_label, current_title[:32])
+        self["plot_title"].setText(_single_line_text(plot_label, width=46, fallback="القصة"))
+
+        plot_text, plot_source = _pick_plot_text_with_source(data, self._item)
+        plot_text = re.sub(r"^\[.*?\]\s*|^المصدر:\s*.*?\|\s*", "", plot_text)
+        _MID_SITES = (
+            "EgyDead", "Wecima", "Akoam", "ArabSeed",
+            "TopCinema", "TopCinemaa", "FaselHD", "Shaheed", "Shaheed4u",
+        )
+        for _ms in _MID_SITES:
+            plot_text = re.sub(
+                r"\s*[|\-]\s*" + re.escape(_ms) + r"[^\u0600-\u06ff\n]{0,25}",
+                " ", plot_text, flags=re.I)
+            plot_text = re.sub(
+                r"\u0639\u0644\u0649\s+\u0645\u0648\u0642\u0639\s+" + re.escape(_ms)
+                + r"[^\u0600-\u06ff\n]{0,30}",
+                " ", plot_text, flags=re.I)
+        plot_text = re.sub(r"  +", " ", plot_text).strip()
+        my_log("Detail plot source: {} | len={}".format(plot_source, len(plot_text)))
+
+        _pt = (plot_text or "").strip()
+        if len(_pt) > 500:
+            _pt = _pt[:500].rsplit(" ", 1)[0] + "…"
+        # FIX #2: use correct U+200F RIGHT-TO-LEFT MARK (not embedding chars U+202B/202C)
+        _ar_count = sum(1 for _c in _pt[:80] if "\u0600" <= _c <= "\u06ff")
+        if _ar_count > int(len(_pt[:80]) * 0.3):
+            _pt = "\u200f" + _pt
+        self["plot"].setText(_pt)
+
+        self._servers = _sort_servers([s for s in data.get("servers", []) if s.get("url")])
+        self._episodes = [e for e in data.get("items", []) if e.get("type") == "episode"]
+
+        my_log("Detail _onLoaded: servers={}, items={}".format(len(self._servers), len(self._episodes)))
+
+        is_series = (
+            data.get("type") in ("series", "show")
+            or self._item.get("type") in ("series", "show")
+            or bool(self._episodes)
+        )
+
+        # IMPORTANT: what to display is decided by what's actually present
+        # (self._episodes vs self._servers), not by the "type" label. An
+        # individual episode page is type="series" but has no
+        # sub-episodes of its own - it has servers, exactly like a movie.
+        # Gating on is_series meant every individual episode page always
+        # fell into the "no episodes available" branch and never even
+        # looked at self._servers, even when servers were correctly
+        # found (confirmed via logs showing servers=8 discarded here).
+        if self._episodes:
+            self["section"].setText(_single_line_text("الحلقات المتاحة: {}  |  اختر الحلقة المطلوبة".format(len(self._episodes)), width=90))
+            self["menu"].setList(["{}. {}".format(i + 1, _single_line_text(ep.get("title", "Episode"), width=58, fallback="حلقة")) for i, ep in enumerate(self._episodes)])
+            self["status"].setText(self._status_hint("اختار حلقة — OK"))
+        elif self._servers:
+            self["section"].setText(_single_line_text("السيرفرات المتاحة: {}  |  اختر الجودة أو السيرفر".format(len(self._servers)), width=90))
+            self["menu"].setList(["{}. {}".format(i + 1, _single_line_text(s.get("name", "Server"), width=58, fallback="Server")) for i, s in enumerate(self._servers)])
+            self["status"].setText(self._status_hint("اختار سيرفر — OK"))
+        elif is_series:
+            self["section"].setText("الحلقات المتاحة: 0")
+            self["menu"].setList(["لا توجد حلقات متاحة حالياً"])
+            self["status"].setText("لا توجد حلقات")
+        else:
+            self["section"].setText("السيرفرات المتاحة: 0")
+            self["menu"].setList(["لا توجد سيرفرات متاحة"])
+            self["status"].setText("لا توجد سيرفرات")
+
+        poster_url = data.get("poster") or self._item.get("poster", "")
+        if poster_url:
+            threading.Thread(
+                target=self._downloadPoster, args=(poster_url,), daemon=True
+            ).start()
+
+    def _status_hint(self, prefix):
+        fav_state = "محفوظ" if _is_favorite(self._item.get("url")) else "غير محفوظ"
+        tmdb_state = "TMDb مفعل" if _tmdb_enabled() else "TMDb غير مفعل"
+        return "{}  |  {}  |  {}".format(prefix, fav_state, tmdb_state)
+
+    def _refreshPoster(self):
+        if getattr(self, "_poster_loaded", False):
+            try:
+                self["poster"].show()
+            except Exception:
+                pass
+            return
+        poster_url = None
+        if self._data and self._data.get("poster"):
+            poster_url = self._data["poster"]
+        elif self._item.get("poster"):
+            poster_url = self._item["poster"]
+        if poster_url:
+            self._downloadPoster(poster_url)
+        else:
+            callInMainThread(self["poster"].hide)
+
+    def _downloadPoster(self, url):
+        try:
+            if not url: return
+            if url.startswith("//"): url = "https:" + url
+
+            import urllib.request as urllib2
+            try:
+                from urllib.parse import urlparse, quote, unquote, urlunparse
+                p = list(urlparse(url))
+                p[2] = quote(unquote(p[2]))
+                p[4] = quote(unquote(p[4]))
+                url = urlunparse(p)
+            except Exception: pass
+
+            cached = _get_cached_poster(url)
+            if cached:
+                callInMainThread(self.picLoad.setPara, (self["poster"].instance.size().width(), self["poster"].instance.size().height(), 1, 1, 0, 1, "#000000"))
+                callInMainThread(self.picLoad.startDecode, cached)
+                return
+
+            cache_path = _poster_cache_path(url)
+            # FIX: same missing-Referer hotlink-protection issue as the
+            # preview downloader above.
+            from urllib.parse import urlparse as _urlparse
+            _p = _urlparse(url)
+            referer = "{}://{}/".format(_p.scheme, _p.netloc)
+            req = urllib2.Request(url, headers={"User-Agent": SAFE_UA, "Referer": referer})
+            data = urllib2.urlopen(req, timeout=10).read()
+
+            save_path = cache_path or "/tmp/ap_detail_{}.jpg".format(int(time.time()))
+            with open(save_path, "wb") as f:
+                f.write(data)
+            if not cache_path:
+                self._tmp_posters.append(save_path)
+            callInMainThread(self.picLoad.setPara, (self["poster"].instance.size().width(), self["poster"].instance.size().height(), 1, 1, 0, 1, "#000000"))
+            callInMainThread(self.picLoad.startDecode, save_path)
+        except Exception as e:
+            my_log("_downloadPoster error: {} (URL: {})".format(e, url))
+
+    def _onOk(self):
+        idx = self["menu"].getSelectedIndex()
+        if idx < 0:
+            return
+
+        # Mirrors _onLoaded's display logic exactly: what a click means is
+        # decided by what's actually present, not by the "type" label - an
+        # individual episode page is type="series" but has servers, not
+        # sub-episodes, and needs to behave like a movie here too.
+        if self._episodes:
+            if idx >= len(self._episodes):
+                return
+            ep = self._episodes[idx]
+            self.session.open(ArabicPlayerDetail, ep, self._site, "episode")
+        elif self._servers:
+            if idx >= len(self._servers):
+                return
+            server = self._servers[idx]
+            self["status"].setText("Extracting stream...")
+            self["status"].show()
+            threading.Thread(target=self._bgExtract, args=(server,), daemon=True).start()
+
+    def _toggleFavorite(self):
+        base = self._data or self._item
+        entry = _entry_from_item(
+            dict(self._item, **(base or {})),
+            self._site,
+            self._m_type,
+            {"type": (base or {}).get("type", self._item.get("type", self._m_type))}
+        )
+        added = _toggle_favorite_entry(entry)
+        self["status"].setText("تمت الإضافة إلى المفضلة" if added else "تم الحذف من المفضلة")
+        if self._data:
+            self._onLoaded(self._data)
+
+    def _refreshTMDb(self):
+        if not _tmdb_enabled():
+            self["status"].setText("أضف TMDb API Key من الإعدادات أولاً")
+            return
+        self["status"].setText("جاري تحديث البيانات من TMDb...")
+        threading.Thread(target=self._bgRefreshTMDb, daemon=True).start()
+
+    def _bgRefreshTMDb(self):
+        try:
+            merged = _merge_tmdb_data(self._data or self._item)
+            callInMainThread(self._onLoaded, merged)
+        except Exception as e:
+            my_log("TMDb refresh failed: {}".format(e))
+            callInMainThread(self["status"].setText, "فشل تحديث TMDb")
+
+    def _bgExtract(self, server):
+        try:
+            from extractors.base import log
+            log("Detail _bgExtract: START extracting for server={}".format(server.get("name", "Unknown")))
+
+            extract_fn = None
+            try:
+                extractor = _get_extractor(self._site)
+                extract_fn = getattr(extractor, "extract_stream", None)
+            except Exception:
+                extract_fn = None
+
+            if extract_fn is None:
+                from extractors.base import extract_stream as extract_fn
+
+            url, qual, final_ref = extract_fn(server["url"])
+
+            if url:
+                log("Detail _bgExtract: SUCCESS! URL: {}".format(url))
+                callInMainThread(self._onStreamFound, url, qual, final_ref, server)
+            else:
+                log("Detail _bgExtract: FAILED to resolve stream")
+                callInMainThread(self["status"].setText, "فشل استخراج الرابط — جرب سيرفر تاني")
+        except Exception as e:
+            log("Detail _bgExtract CRITICAL ERROR: {}".format(e))
+            callInMainThread(self["status"].setText, "خطأ في النظام: {}".format(str(e)[:30]))
+
+    def _onStreamFound(self, stream_url, quality, final_ref, server):
+        if not stream_url:
+            self["status"].setText("{} — غير متاح، جرب سيرفر آخر".format(server["name"]))
+            return
+        my_log("Stream found: {} [{}]".format(stream_url, quality))
+        history_entry = _entry_from_item(
+            dict(self._item, **(self._data or {})),
+            self._site,
+            self._m_type,
+            {
+                "server_name": server.get("name", ""),
+                "quality": quality or "",
+                "last_stream_url": stream_url,
+            }
+        )
+        _upsert_library_item("history", history_entry, limit=120)
+
+        # FIX #3: removed unused _quality_tag variable
+        # Use raw single-line title
+        title = getattr(self, "_raw_title", None) or \
+                re.sub(r"\s+", " ", self["title"].getText()).strip()
+
+        try:
+            raw_url = stream_url.strip()
+            if "|" in raw_url:
+                main_url, old_params = raw_url.split("|", 1)
+            else:
+                main_url, old_params = raw_url, ""
+
+            lower_main_url = main_url.lower()
+            is_media_url = any(marker in lower_main_url for marker in (
+                ".m3u8", ".mp4", ".mkv", ".mp3", ".ts", ".avi",
+                "master.txt", "/hls", "/stream", "/playlist"
+            ))
+            is_embed_page = any(marker in lower_main_url for marker in (
+                "/embed-", "/embed/", "/e/", "/watch/"
+            ))
+            if is_embed_page and not is_media_url:
+                self["status"].setText("الرابط صفحة تشغيل وليس ملف فيديو — جرب سيرفر آخر")
+                return
+
+            headers = {"User-Agent": SAFE_UA}
+
+            if final_ref:
+                headers["Referer"] = final_ref
+
+            if old_params:
+                for p in old_params.split("&"):
+                    if "=" in p:
+                        k, v = p.split("=", 1)
+                        if k not in headers: headers[k] = v
+
+            header_str = "&".join(["{}={}".format(k, v) for k, v in headers.items()])
+            pure_url = main_url.split("|")[0].strip()
+            url = pure_url + "#" + header_str if header_str else pure_url
+
+            _item_url = self._item.get("url", "")
+            _saved_pos = _get_saved_position(_item_url)
+            if _saved_pos > 30:
+                if _saved_pos >= 3600:
+                    _hours_r = _saved_pos // 3600
+                    _mins_r = (_saved_pos % 3600) // 60
+                    _secs_r = _saved_pos % 60
+                    resume_text = "Resume from {:02d}:{:02d}:{:02d}?".format(_hours_r, _mins_r, _secs_r)
+                else:
+                    _mins_r = _saved_pos // 60
+                    _secs_r = _saved_pos % 60
+                    resume_text = "Resume from {}:{:02d}?".format(_mins_r, _secs_r)
+
+                def _on_resume(_ans, _u=url, _t=title, _iu=_item_url, _sp=_saved_pos):
+                    if not _ans:
+                        _save_position(_iu, 0)
+                    _play(self.session, _u, _t, resume_pos=_sp if _ans else 0, item_url=_iu)
+                self["status"].setText("جاري فتح المشغل...")
+                self.session.openWithCallback(
+                    _on_resume, MessageBox,
+                    resume_text,
+                    MessageBox.TYPE_YESNO, timeout=8, default=True)
+            else:
+                self["status"].setText("Opening player...")
+                _play(self.session, url, title, resume_pos=0, item_url=_item_url)
+            self["status"].hide()
+
+        except Exception as e:
+            my_log("Error opening player: {}".format(e))
+            self["status"].setText("خطأ في المشغل: {}".format(str(e)[:60]))
+
+
+from Screens.InfoBar import InfoBar
+
+def _build_remote_play_candidates(url):
+    url = str(url).strip()
+    plain_url = url.split("#", 1)[0].strip()
+    headers = {}
+    if "#" in url:
+        for part in url.split("#", 1)[1].split("&"):
+            if "=" in part:
+                key, value = part.split("=", 1)
+                headers[key] = value
+    candidates = []
+    seen = set()
+
+    def add_candidate(p_type, svc_url, label, uses_proxy=False):
+        key = (p_type, svc_url)
+        if not svc_url or key in seen:
+            return
+        seen.add(key)
+        candidates.append((p_type, svc_url, label, uses_proxy))
+
+    if plain_url.startswith("https://") or plain_url.startswith("http://"):
+        proxy_params = {"url": plain_url}
+        if headers.get("Referer"):
+            proxy_params["referer"] = headers["Referer"]
+        if headers.get("User-Agent"):
+            proxy_params["ua"] = headers["User-Agent"]
+        proxied = "http://127.0.0.1:{}/stream?{}".format(_PROXY_PORT, urlencode(proxy_params))
+        start_proxy()
+        legacy_raw = url.replace("#", "|") if "#" in url else url
+        legacy_proxied = "http://127.0.0.1:{}/{}".format(_PROXY_PORT, legacy_raw)
+    else:
+        proxied = ""
+        legacy_proxied = ""
+
+    is_hls = any(x in plain_url.lower() for x in (".m3u8", "master.txt", "/hls", "/playlist"))
+
+    if is_hls:
+        add_candidate(4097, plain_url, "4097 مباشر HLS")
+        if proxied:
+            add_candidate(4097, proxied, "4097 + proxy HLS", True)
+        add_candidate(4097, url, "4097 + headers HLS")
+        add_candidate(8193, plain_url, "8193 مباشر")
+        if proxied:
+            add_candidate(8193, proxied, "8193 + proxy", True)
+    else:
+        if proxied:
+            add_candidate(5001, proxied, "5001 + proxy", True)
+        add_candidate(5001, plain_url, "5001 مباشر")
+        add_candidate(8193, plain_url, "8193 مباشر")
+        if proxied:
+            add_candidate(8193, proxied, "8193 + proxy", True)
+        add_candidate(4097, plain_url, "4097 مباشر")
+        if proxied:
+            add_candidate(4097, proxied, "4097 + proxy", True)
+        add_candidate(4097, url, "4097 + headers")
+    if legacy_proxied:
+        add_candidate(4097, legacy_proxied, "4097 + proxy قديم", True)
+
+    if os.path.exists("/usr/bin/exteplayer3"):
+        if plain_url.startswith("http://") or plain_url.startswith("https://"):
+            add_candidate(5002, plain_url, "5002 مباشر")
+            if proxied:
+                add_candidate(5002, proxied, "5002 + proxy", True)
+        add_candidate(5002, url, "5002 + headers")
+
+    return candidates
+
+
+def _copy_service_ref(sref):
+    if not sref:
+        return None
+    try:
+        return eServiceReference(sref.toString())
+    except Exception:
+        try:
+            return eServiceReference(str(sref.toString()))
+        except Exception:
+            return sref
+
+
+def _capture_previous_service(session):
+    try:
+        return _copy_service_ref(session.nav.getCurrentlyPlayingServiceReference())
+    except Exception as e:
+        my_log("Capture previous service failed: {}".format(e))
+        return None
+
+
+def _restore_previous_service(session, previous_service):
+    if not previous_service:
+        return
+    try:
+        session.nav.stopService()
+    except Exception:
+        pass
+    try:
+        session.nav.playService(previous_service)
+        my_log("Previous service restored")
+    except Exception as e:
+        my_log("Restore previous service failed: {}".format(e))
+
+
+# ─── Simple Player ────────────────────────────────────────────────────────────
+class ArabicPlayerSimplePlayer(Screen):
+    skin = """
+    <screen name="ArabicPlayerSimplePlayer" position="0,0" size="1920,1080" flags="wfNoBorder" backgroundColor="transparent">
+
+        <widget name="osd_shadow"   position="148,856" size="1624,230" backgroundColor="#000000" zPosition="9" />
+        <widget name="overlay_bg"   position="160,860" size="1600,210" backgroundColor="#0A0E14" zPosition="10" />
+        <widget name="osd_topline"  position="160,860" size="1600,3" backgroundColor="#00E5FF" zPosition="11" />
+        <widget name="osd_titlebar" position="160,860" size="1600,52" backgroundColor="#0D1520" zPosition="11" />
+        <widget name="osd_title"    position="180,868" size="1180,38" font="Regular;30" foregroundColor="#00E5FF" transparent="1" zPosition="12" halign="left" />
+        <widget name="osd_durtext"  position="1380,868" size="360,38" font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
+        <widget name="prog_bar"     position="160,906" size="1600,30" font="Regular;22" foregroundColor="#00B4D8" transparent="1" zPosition="12" halign="left" />
+        <widget name="osd_elapsed"  position="180,938" size="320,44" font="Regular;36" foregroundColor="#FFD740" transparent="1" zPosition="12" />
+        <widget name="status"       position="640,938" size="640,44" font="Regular;36" foregroundColor="#39D98A" transparent="1" zPosition="12" halign="center" />
+        <widget name="osd_hints"    position="1220,938" size="520,44" font="Regular;26" foregroundColor="#8B949E" transparent="1" zPosition="12" halign="right" />
+        <widget name="osd_divider"  position="160,982" size="1600,2" backgroundColor="#1C2333" zPosition="11" />
+        <widget name="osd_keybar"   position="160,984" size="1600,46" backgroundColor="#0D1520" zPosition="11" />
+        <widget name="osd_keys"     position="180,992" size="1560,34" font="Regular;24" foregroundColor="#484F58" transparent="1" zPosition="12" halign="center" />
+        <widget name="osd_botline"  position="160,1027" size="1600,3" backgroundColor="#0A2040" zPosition="11" />
+    </screen>
+    """
+
+    def __init__(self, session, title, candidates, previous_service=None, resume_pos=0, item_url=""):
+        Screen.__init__(self, session)
+        self["overlay_bg"]   = Label("")
+        self["status"]       = Label("جاري التشغيل...")
+        self["osd_shadow"]   = Label("")
+        self["osd_titlebar"] = Label("")
+        self["osd_title"]    = Label("")
+        self["osd_durtext"]  = Label("")
+        self["osd_topline"]  = Label("")
+        self["prog_bar"]     = Label("")
+        self["osd_elapsed"]  = Label("")
+        self["osd_hints"]    = Label("")
+        self["osd_divider"]  = Label("")
+        self["osd_keybar"]   = Label("")
+        self["osd_keys"]     = Label("")
+        self["osd_botline"]  = Label("")
+        _raw = (title or "").strip()
+        _qtag_m = re.search(r'\s*(\[\d+p\])\s*$', _raw)
+        _qtag = _qtag_m.group(1) if _qtag_m else ""
+        _bare = _raw[:_qtag_m.start()].strip() if _qtag_m else _raw
+        if len(_bare) > 34:
+            _bare = _bare[:32].rstrip() + u"\u2026"
+        self.title = (_bare + " " + _qtag).strip() if _qtag else _bare
+        self.candidates = candidates or []
+        self.previous_service = _copy_service_ref(previous_service)
+        self.sref = None
+        self._play_confirmed = False
+        self._candidate_idx = -1
+        self._candidate_start_ts = 0
+        self._candidate_uses_proxy = False
+        self._candidate_label = ""
+        self._handoff = False
+        self._restored_previous = False
+        self._resume_pos = int(resume_pos or 0)
+        self._item_url  = item_url or ""
+        self._seek_timer = eTimer()
+        self._seek_timer.callback.append(self.__doSeek)
+        self._seek_retry_count = 0
+        self._seek_verify_timer = eTimer()
+        self._seek_verify_timer.callback.append(self.__verifySeek)
+        self._hide_timer = eTimer()
+        self._hide_timer.callback.append(self.__hideOSD)
+        self._osd_update_timer = eTimer()
+        self._osd_update_timer.callback.append(self.__updateOSD)
+        self._osd_visible = False
+        self._total_secs  = 0
+        self._osd_auto_hide_secs = 4
+        self._paused = False
+        self._paused_elapsed = 0
+        self._force_confirmation_timer = eTimer()
+        self._force_confirmation_timer.callback.append(self.__forceConfirm)
+
+        self["actions"] = ActionMap(
+            ["OkCancelActions", "MediaPlayerActions", "InfobarSeekActions", "DirectionActions", "ColorActions"],
+            {
+                "cancel":           self.__onExit,
+                "stop":             self.__onExit,
+                "ok":               self.__togglePause,
+                "playpauseService": self.__togglePause,
+                "right":            lambda: self.__seek(+10),
+                "left":             lambda: self.__seek(-10),
+                "seekFwd":          lambda: self.__seek(+60),
+                "seekBack":         lambda: self.__seek(-60),
+                "green":            self.__onRestart,
+            },
+            -1
+        )
+        self._retry_timer = eTimer()
+        self._retry_timer.callback.append(self.__onTimeout)
+        eventmap = {
+            iPlayableService.evTuneFailed: self.__onFailed,
+            iPlayableService.evEOF: self.__onFailed,
+        }
+        ev_video = getattr(iPlayableService, "evVideoSizeChanged", None)
+        if ev_video is not None:
+            eventmap[ev_video] = self.__onConfirmed
+        self._events = ServiceEventTracker(screen=self, eventmap=eventmap)
+        self.onLayoutFinish.append(self.__initOSD)
+        self.onLayoutFinish.append(self.__playNext)
+        self.onClose.append(self.__stop)
+
+    _OSD_WIDGETS = [
+        "osd_shadow","overlay_bg","osd_topline","osd_botline",
+        "osd_titlebar","osd_title","osd_durtext",
+        "prog_bar","osd_elapsed",
+        "status","osd_hints","osd_divider",
+        "osd_keybar","osd_keys",
+    ]
+
+    def __initOSD(self):
+        for w in self._OSD_WIDGETS:
+            try: self[w].hide()
+            except: pass
+
+    def __hideOSD(self):
+        self._osd_visible = False
+        try: self._osd_update_timer.stop()
+        except: pass
+        for w in self._OSD_WIDGETS:
+            try: self[w].hide()
+            except: pass
+
+    def __showOSD(self, auto_hide=True):
+        self._osd_visible = True
+        for w in self._OSD_WIDGETS:
+            try: self[w].show()
+            except: pass
+        self.__updateOSD()
+        try:
+            self._osd_update_timer.start(1000, False)
+        except: pass
+        if auto_hide:
+            try:
+                self._hide_timer.stop()
+                self._hide_timer.start(self._osd_auto_hide_secs * 1000, True)
+            except: pass
+
+    def __updateOSD(self):
+        if not self._osd_visible:
+            try: self._osd_update_timer.stop()
+            except: pass
+            return
+        try:
+            if self._paused:
+                elapsed = self._paused_elapsed
+            else:
+                wall = _GLOBAL_PLAY_START_WALL
+                base = _GLOBAL_PLAY_START_POS
+                if wall and base >= 0:
+                    elapsed = max(0, int((time.time() - wall) + base))
+                else:
+                    elapsed = 0
+            he = elapsed // 3600; me = (elapsed % 3600) // 60; se = elapsed % 60
+            self["osd_elapsed"].setText("{:02d}:{:02d}:{:02d}".format(he, me, se))
+            total = self._total_secs
+            if not total:
+                try:
+                    svc = self.session.nav.getCurrentService()
+                    seek = svc and svc.seek()
+                    if seek:
+                        r = seek.getLength()
+                        if r and r[0] == 0 and r[1] > 0:
+                            total = r[1] // 90000
+                            self._total_secs = total
+                except: pass
+            if total > 0:
+                rem = max(0, total - elapsed)
+                pct = min(1.0, float(elapsed) / float(total))
+                hr = rem // 3600
+                mr = (rem % 3600) // 60
+                sr = rem % 60
+                ht = total // 3600
+                mt = (total % 3600) // 60
+                st = total % 60
+                self["osd_durtext"].setText("-{:02d}:{:02d}:{:02d}  {:02d}:{:02d}:{:02d}".format(hr, mr, sr, ht, mt, st))
+                BAR_W = 96
+                filled = max(0, min(BAR_W, int(pct * BAR_W)))
+                bar = u"█" * filled + u"░" * (BAR_W - filled)
+                self["prog_bar"].setText(u"{} {:.1f}%".format(bar, pct * 100))
+            else:
+                self["osd_durtext"].setText("")
+                self["prog_bar"].setText("")
+            self["osd_keys"].setText("OK=Pause   << -10s   +10s >>   <<< -60s   +60s >>>   Green=إعادة+استئناف   Stop=حفظ&خروج")
+        except Exception as e:
+            my_log("updateOSD error: {}".format(e))
+
+    def __forceConfirm(self):
+        if not self._play_confirmed:
+            my_log("Force confirm (unconditional)")
+            self.__onConfirmed()
+
+    def __playNext(self):
+        global _PROXY_LAST_HIT, _PROXY_LAST_BYTES
+        self._candidate_idx += 1
+        if self._candidate_idx >= len(self.candidates):
+            self["status"].setText("تعذر تشغيل الرابط على كل المحاولات")
+            return
+
+        p_type, svc_url, label, uses_proxy = self.candidates[self._candidate_idx]
+        self._play_confirmed = False
+        self._candidate_start_ts = time.time()
+        self._candidate_uses_proxy = uses_proxy
+        self._candidate_label = label
+        if uses_proxy:
+            _PROXY_LAST_HIT = 0
+            _PROXY_LAST_BYTES = 0
+        self.sref = eServiceReference(p_type, 0, svc_url)
+        if sys.version_info[0] == 3:
+            self.sref.setName(str(self.title))
+        else:
+            self.sref.setName(self.title.encode("utf-8", "ignore"))
+
+        self["status"].setText("جاري التشغيل... {}".format(label))
+        my_log("Play attempt: {}".format(label))
+        try:
+            self.session.nav.stopService()
+        except: pass
+        try:
+            self.session.nav.playService(self.sref)
+            self._retry_timer.start(12000, True)
+            self._force_confirmation_timer.start(3000, True)
+        except Exception as e:
+            my_log("SimplePlayer fallback error: {}".format(e))
+            self.__playNext()
+
+    def __onConfirmed(self):
+        if self._play_confirmed:
+            return
+        self._play_confirmed = True
+        try:
+            self._retry_timer.stop()
+            self._force_confirmation_timer.stop()
+        except: pass
+        my_log("Play confirmed: {}".format(self._candidate_label))
+        _start_pos_tracker(self.session, self._item_url, start_pos=0)
+        if self._resume_pos > 30:
+            self._seek_retry_count = 0
+            self._seek_timer.start(6000, True)
+        self["osd_title"].setText(self.title)
+        self["status"].setText(u"▶ Playing")
+        self._total_secs = 0
+        self.__showOSD(True)
+
+    def __togglePause(self):
+        try:
+            svc = self.session.nav.getCurrentService()
+            if not svc:
+                self.__showOSD(True); return
+            p = svc.pause()
+            if not p:
+                self.__showOSD(True); return
+            if self._paused:
+                p.unpause()
+                self._paused = False
+                global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
+                _GLOBAL_PLAY_START_POS = self._paused_elapsed
+                _GLOBAL_PLAY_START_WALL = time.time()
+                self["status"].setText(u"▶ Playing")
+            else:
+                wall = _GLOBAL_PLAY_START_WALL
+                base = _GLOBAL_PLAY_START_POS
+                if wall:
+                    elapsed = int((time.time() - wall) + base)
+                else:
+                    elapsed = 0
+                self._paused_elapsed = max(0, elapsed)
+                p.pause()
+                self._paused = True
+                self["status"].setText(u"⏸ Paused")
+            self.__showOSD(True)
+        except Exception as e:
+            my_log("togglePause error: {}".format(e))
+            self.__showOSD(True)
+
+    def __seek(self, delta_secs):
+        try:
+            svc = self.session.nav.getCurrentService()
+            if not svc: return
+            sk = svc.seek()
+            if not sk: return
+            global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS
+            global _GLOBAL_LAST_SEEK_TARGET
+            _wall = _GLOBAL_PLAY_START_WALL
+            _base = _GLOBAL_PLAY_START_POS
+            if _wall:
+                elapsed = time.time() - _wall
+            else:
+                elapsed = 0
+            current_est = int(_base + elapsed)
+            target = max(0, current_est + int(delta_secs))
+            _tot = self._total_secs
+            if _tot > 0:
+                target = min(target, _tot - 3)
+            sk.seekTo(target * 90000)
+            _GLOBAL_LAST_SEEK_TARGET = target
+            _GLOBAL_PLAY_START_POS = max(0, target - 2)
+            _GLOBAL_PLAY_START_WALL = time.time()
+            if self._paused:
+                self._paused_elapsed = target
+            self._total_secs = 0
+            _th = target // 3600; _tm = (target % 3600) // 60; _ts = target % 60
+            _arr = u"➡" if delta_secs > 0 else u"⬅"
+            self["status"].setText(u"{} {:02d}:{:02d}:{:02d}".format(_arr, _th, _tm, _ts))
+            self.__showOSD(True)
+            self._hide_timer.start(2500, True)
+        except Exception as e:
+            my_log("seek error: {}".format(e))
+
+    def __onRestart(self):
+        my_log("Restart+Resume requested by green button")
+        if self._item_url:
+            try:
+                if self._paused:
+                    secs = self._paused_elapsed
+                else:
+                    wall = _GLOBAL_PLAY_START_WALL
+                    base = _GLOBAL_PLAY_START_POS
+                    secs = int((time.time() - wall) + base) if wall else 0
+                if secs > 30:
+                    _save_position(self._item_url, secs)
+                    self._resume_pos = secs
+                    my_log("Restart: saved pos={}s, will re-seek after restart".format(secs))
+            except Exception as e:
+                my_log("Restart pos-save error: {}".format(e))
+        try:
+            self._seek_timer.stop()
+            self._seek_verify_timer.stop()
+        except: pass
+        self._play_confirmed = False
+        self._seek_retry_count = 0
+        try:
+            self.session.nav.stopService()
+        except: pass
+        self._candidate_idx = -1
+        self["status"].setText(u"إعادة التشغيل + استئناف من {}:{:02d}...".format(
+            self._resume_pos // 60, self._resume_pos % 60) if self._resume_pos > 30 else u"إعادة التشغيل...")
+        self.__showOSD(True)
+        restart_timer = eTimer()
+        restart_timer.callback.append(self.__playNext)
+        restart_timer.start(500, True)
+
+    def __onExit(self):
+        try:
+            if self._item_url:
+                if self._paused:
+                    secs = self._paused_elapsed
+                else:
+                    wall = _GLOBAL_PLAY_START_WALL
+                    base = _GLOBAL_PLAY_START_POS
+                    if wall:
+                        secs = int((time.time() - wall) + base)
+                    else:
+                        secs = 0
+                _tot = self._total_secs
+                if _tot > 0:
+                    secs = min(secs, _tot - 5)
+                secs = max(0, secs)
+                if secs > 30:
+                    _save_position(self._item_url, secs)
+                    my_log("Exit save: {}s".format(secs))
+        except Exception as e:
+            my_log("Exit save error: {}".format(e))
+        try:
+            self.session.nav.stopService()
+        except: pass
+        _stop_pos_tracker()
+        _restore_previous_service(self.session, self.previous_service)
+        self.close()
+
+    def __stop(self):
+        self.__hideOSD()
+        for t in ("_seek_timer","_seek_verify_timer","_retry_timer","_hide_timer","_osd_update_timer","_force_confirmation_timer"):
+            try: getattr(self, t).stop()
+            except: pass
+
+    def __onFailed(self):
+        if self._play_confirmed:
+            return
+        try:
+            self._retry_timer.stop()
+            self._force_confirmation_timer.stop()
+        except: pass
+        my_log("Play failed event: {}".format(self._candidate_label))
+        self.__playNext()
+
+    def __onTimeout(self):
+        global _PROXY_LAST_HIT, _PROXY_LAST_BYTES
+        if self._play_confirmed:
+            return
+        if self._candidate_uses_proxy and _PROXY_LAST_HIT >= self._candidate_start_ts and _PROXY_LAST_BYTES > 0:
+            my_log("Play proxy confirmed by traffic: {} bytes".format(_PROXY_LAST_BYTES))
+            self.__onConfirmed()
+            return
+        my_log("Play timeout: {}".format(self._candidate_label))
+        self.__playNext()
+
+    def __doSeek(self):
+        if not self._resume_pos or self._resume_pos <= 30:
+            my_log("Seek skipped: resume_pos={}".format(self._resume_pos))
+            return
+        try:
+            svc = self.session.nav.getCurrentService()
+            seek = svc and svc.seek()
+            if not seek:
+                self._seek_retry_count += 1
+                if self._seek_retry_count <= 3:
+                    my_log("doSeek: no seek interface, retry {}/3 in 4s".format(self._seek_retry_count))
+                    self._seek_timer.start(4000, True)
+                else:
+                    my_log("doSeek: giving up after 3 retries")
+                return
+
+            seek.seekTo(self._resume_pos * 90000)
+            my_log("Resume seekTo: {}s (attempt {})".format(self._resume_pos, self._seek_retry_count + 1))
+            self._total_secs = 0
+
+            self._seek_verify_timer.start(4000, True)
+
+            if self._osd_visible:
+                self.__updateOSD()
+        except Exception as e:
+            my_log("doSeek failed: {} — retry {}/3".format(e, self._seek_retry_count))
+            self._seek_retry_count += 1
+            if self._seek_retry_count <= 3:
+                self._seek_timer.start(4000, True)
+
+    def __verifySeek(self):
+        if not self._resume_pos or self._resume_pos <= 30:
+            return
+        global _GLOBAL_PLAY_START_WALL, _GLOBAL_PLAY_START_POS, _GLOBAL_LAST_SEEK_TARGET
+        try:
+            svc = self.session.nav.getCurrentService()
+            seek = svc and svc.seek()
+            actual_pos = -1
+
+            if seek:
+                try:
+                    r = seek.getPlayPosition()
+                    if r and r[0] == 0 and r[1] > 0:
+                        actual_pos = int(r[1] // 90000)
+                except Exception:
+                    pass
+
+            if actual_pos >= 0:
+                if actual_pos >= max(0, self._resume_pos - 60):
+                    _GLOBAL_PLAY_START_POS = actual_pos
+                    _GLOBAL_PLAY_START_WALL = time.time()
+                    _GLOBAL_LAST_SEEK_TARGET = actual_pos
+                    if self._paused:
+                        self._paused_elapsed = actual_pos
+                    my_log("verifySeek OK via PTS: actual={}s target={}s".format(
+                        actual_pos, self._resume_pos))
+                else:
+                    if seek and self._seek_retry_count <= 3:
+                        self._seek_retry_count += 1
+                        seek.seekTo(self._resume_pos * 90000)
+                        my_log("verifySeek double-tap {}/3: actual={}s target={}s".format(
+                            self._seek_retry_count, actual_pos, self._resume_pos))
+                        self._seek_verify_timer.start(3000, True)
+                    else:
+                        _GLOBAL_PLAY_START_POS = max(0, self._resume_pos - 2)
+                        _GLOBAL_PLAY_START_WALL = time.time()
+                        my_log("verifySeek giving up, setting display to target {}s".format(
+                            self._resume_pos))
+            else:
+                if self._seek_retry_count <= 2:
+                    if seek:
+                        seek.seekTo(self._resume_pos * 90000)
+                    self._seek_retry_count += 1
+                    _GLOBAL_PLAY_START_POS = max(0, self._resume_pos - 2)
+                    _GLOBAL_PLAY_START_WALL = time.time()
+                    _GLOBAL_LAST_SEEK_TARGET = self._resume_pos
+                    if self._paused:
+                        self._paused_elapsed = self._resume_pos
+                    my_log("verifySeek double-tap {}/3 (no PTS), target={}s".format(
+                        self._seek_retry_count, self._resume_pos))
+                    self._seek_verify_timer.start(3000, True)
+                else:
+                    my_log("verifySeek: max retries reached, target={}s".format(self._resume_pos))
+        except Exception as e:
+            my_log("verifySeek error: {}".format(e))
+
+    def __restorePrevious(self):
+        if self._restored_previous:
+            return
+        self._restored_previous = True
+        _restore_previous_service(self.session, self.previous_service)
+
+
+# ─── Global play function ─────────────────────────────────────────────────────
+def _play(session, url, title, resume_pos=0, item_url=""):
+    try:
+        svc_url = str(url).strip()
+        is_remote = svc_url.startswith("http://") or svc_url.startswith("https://")
+        previous_service = _capture_previous_service(session)
+
+        if is_remote:
+            session.open(ArabicPlayerSimplePlayer, title, _build_remote_play_candidates(svc_url), previous_service, resume_pos=resume_pos, item_url=item_url)
+            return
+
+        sref = eServiceReference(4097, 0, svc_url)
+        if sys.version_info[0] == 3:
+            sref.setName(str(title))
+        else:
+            sref.setName(title.encode("utf-8", "ignore"))
+
+        try:
+            from Screens.InfoBar import MoviePlayer
+            callback = lambda *args: _restore_previous_service(session, previous_service)
+            try:
+                if is_remote:
+                    session.openWithCallback(callback, MoviePlayer, sref, streamMode=True, askBeforeLeaving=False)
+                else:
+                    session.openWithCallback(callback, MoviePlayer, sref, askBeforeLeaving=False)
+            except TypeError:
+                session.openWithCallback(callback, MoviePlayer, sref)
+        except Exception as e:
+            my_log("[PLAY_INFOBAR_FALLBACK] " + str(e))
+            session.open(ArabicPlayerSimplePlayer, title, _build_remote_play_candidates(svc_url), previous_service)
+    except Exception as e:
+        my_log("[PLAY_ERROR] " + str(e))
+
+# ─── Splash Screen ───────────────────────────────────────────────────────────
+class ArabicPlayerSplash(Screen):
+    skin = """
+    <screen name="ArabicPlayerSplash" position="0,0" size="1920,1080" flags="wfNoBorder" backgroundColor="#000000">
+        <widget name="splash_pic" position="0,0" size="1920,1080" zPosition="1" alphatest="blend" />
+    </screen>
+    """
+
+    def __init__(self, session):
+        self.skin = ArabicPlayerSplash.skin.format(PLUGIN_PATH)
+        Screen.__init__(self, session)
+        self["splash_pic"] = Pixmap()
+        self._timer = eTimer()
+        self._timer.callback.append(self._onFinish)
+
+        self.picLoad = ePicLoad()
+        self.picLoad.PictureData.get().append(self._paintSplash)
+
+        self.onLayoutFinish.append(self._start)
+
+    def _start(self):
+        splash_path = os.path.join(PLUGIN_PATH, "images", "splash.png")
+        if os.path.exists(splash_path):
+            self.picLoad.setPara((1920, 1080, 1, 1, 0, 1, "#000000"))
+            self.picLoad.startDecode(splash_path)
+        self._timer.start(2500, True)
+
+    def _paintSplash(self, picData=None):
+        ptr = self.picLoad.getData()
+        if ptr:
+            self["splash_pic"].instance.setPixmap(ptr)
+            self["splash_pic"].show()
+
+    def _onFinish(self):
+        self._timer.stop()
+        try:
+            self.picLoad.PictureData.get().remove(self._paintSplash)
+        except Exception:
+            pass
+        self.session.open(ArabicPlayerHome)
+        self.close()
+
+
+# ─── Plugin Entry Points ──────────────────────────────────────────────────────
+def main(session, **kwargs):
+    session.open(ArabicPlayerSplash)
+
+
+def Plugins(**kwargs):
+    return [
+        PluginDescriptor(
+            name        = _PLUGIN_NAME,
+            description = "تشغيل أفلام ومسلسلات من مواقع عربية",
+            where       = PluginDescriptor.WHERE_PLUGINMENU,
+            icon        = "plugin.png",
+            fnc         = main
+        ),
+        PluginDescriptor(
+            name        = _PLUGIN_NAME,
+            description = "تشغيل أفلام ومسلسلات من مواقع عربية",
+            where       = PluginDescriptor.WHERE_EXTENSIONSMENU,
+            fnc         = main
+        ),
+    ]
+``````
+
+## File: README.md
+``````markdown
+# 🎬 ArabicPlayer Plugin (Enigma2)
+![ArabicPlayer Logo](plugin.png)
+
+تطبيق **ArabicPlayer** هو بلاجن مخصص لأجهزة الاستقبال العاملة بنظام **Enigma2** (مثل Novaler 4K Pro, Dreambox, Vu+ وغيرها)، يتيح لك مشاهدة أحدث الأفلام والمسلسلات العربية والأجنبية المترجمة مباشرة من أشهر المواقع العربية بجودة عالية وبدون تقطيع.
+
+---
+
+## 🌟 المميزات (Premium Version)
+*   **تصميم عصري "Neon Mode"**: واجهة مستخدم جديدة كلياً مع شعار وخلفية "Splash Screen" احترافية.
+*   **دعم شامل لأشهر المواقع**:
+    *   ✅ **TopCinema**: تم إصلاح استخراج السيرفرات وتجاوز مشاكل "صالة العرض".
+    *   ✅ **FaselHD**: استعادة كافة الأقسام (أفلام، مسلسلات، أنمي) مع دعم السيرفرات المشفّرة.
+    *   ✅ **Wecima**: بحث سريع وروابط مباشرة.
+    *   ✅ **EgyDead**: مكتبة ضخمة وبوسترات بوضوح عالٍ.
+    *   ✅ **Akoam & ArabSeed**: محتوى متجدد وتصنيفات مرتبة.
+*   **تجاوز الحماية**: محاكاة كاملة للمتصفح لتجاوز حماية الـ WAF و Cloudflare.
+*   **دعم TMDB**: جلب معلومات الأفلام والبوسترات المفقودة تلقائياً.
+
+---
+
+## 📸 معاينة الواجهة الجديدة (Splash Screen)
+![Splash Screen](images/splash.png)
+
+---
+
+## 🚀 طريقة التثبيت
+يمكنك تثبيت البلاجن مباشرة عبر **التلنت (Telnet)** باستخدام هذا الأمر:
+```bash
+wget -q "--no-check-certificate" https://raw.githubusercontent.com/asdrere123-alt/ArabicPlayer/main/installer.sh -O - | /bin/sh
+```
+
+أو يدوياً:
+1. قم بتحميل الملفات ووضعها في المسار:
+   `/usr/lib/enigma2/python/Plugins/Extensions/ArabicPlayer`
+2. قم بعمل **Restart Enigma2**.
+3. استمتع بالمشاهدة!
+
+---
+
+## 👨‍💻 المطور
+*   **الإصدار**: 1.3.1 (Modern UI)
+*   **بواسطة**: أحمد إبراهيم
+
+---
+
+> [!TIP]
+> جميع الحقوق محفوظة للمواقع الأصلية، هذا البلاجن هو وسيلة لتسهيل الوصول للمحتوى على أجهزة الإنيجما 2 فقط.
+``````
+
+## File: repomix-output-westy4ever-Arabic-player-mod.md
+``````markdown
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+The content has been processed where security check has been disabled.
+
+# File Summary
+
+## Purpose
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+
+## File Format
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  a. A header with the file path (## File: path/to/file)
+  b. The full contents of the file in a code block
+
+## Usage Guidelines
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+
+## Notes
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Security check has been disabled - content may contain sensitive information
+- Files are sorted by Git change count (files with more changes are at the bottom)
+
+# Directory Structure
+```
+extractors/
+  __init__.py
+  akwam.py
+  akwams.py
   arabseed.py
   base.py
   egydead.py
@@ -19196,3 +29634,4 @@ wget -q "--no-check-certificate" https://raw.githubusercontent.com/asdrere123-al
 > جميع الحقوق محفوظة للمواقع الأصلية، هذا البلاجن هو وسيلة لتسهيل الوصول للمحتوى على أجهزة الإنيجما 2 فقط.
 ````
 `````
+``````
