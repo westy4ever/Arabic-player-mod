@@ -43,11 +43,22 @@ def _clean_title(title):
     """
     title = html_unescape(title or "")
     title = title.replace("&amp;", "&")
+    # Strip invisible Unicode formatting chars (RTL/LTR marks, zero-width
+    # spaces, BOM) BEFORE anything anchored to end-of-string below - these
+    # are invisible when rendered but defeat a trailing "$" regex anchor,
+    # which likely explains why the branding-suffix strip below worked
+    # inconsistently (confirmed via logs: same page, same code, same
+    # session - stripped one time, not stripped a few minutes later).
+    title = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff]+', '', title)
     # Strip bracketed tags like "[فيلم]"
     title = re.sub(r'\[[^\]]*\]\s*', '', title)
-    # Strip trailing site-branding suffix from <title> tag text, e.g.
-    # "... مترجمة - توب سينما" -> "... مترجمة"
+    # Strip site-branding suffix from <title> tag text, e.g.
+    # "... مترجمة - توب سينما" -> "... مترجمة". Try the anchored form
+    # first (cleaner - removes the separator too), then fall back to a
+    # plain substring removal anywhere in the string as a safety net in
+    # case some other trailing artifact still defeats the "$" anchor.
     title = re.sub(r'\s*[-|]\s*ت[ةه]?وب\s*سينما\s*$', '', title, flags=re.I)
+    title = re.sub(r'ت[ةه]?وب\s*سينما', '', title, flags=re.I)
     # Strip known noise phrases first, so a leading type word that was
     # originally preceded by one (e.g. "مشاهدة وتحميل فيلم ...") becomes
     # the new leading word and gets caught below.
@@ -100,6 +111,17 @@ def _extract_blocks(html):
 
         link = _normalize_url(href)
         poster = _normalize_url(poster)
+        # FIX: category-list posters are WordPress-generated resized
+        # thumbnail variants (e.g. "...-440x550.jpg"), while the
+        # reliably-working detail-page poster (og:image) is always the
+        # original full-size upload with no size suffix. WordPress
+        # thumbnail regeneration commonly misses a handful of images after
+        # theme/plugin changes, leaving just the resized variant 404ing
+        # while the original (which WordPress never deletes) still
+        # exists - this matches "poster works on the detail page but not
+        # in the list" for the same specific items. Strip the suffix to
+        # use the same reliable original file everywhere.
+        poster = re.sub(r'-\d+x\d+(?=\.\w+(?:\?.*)?$)', '', poster)
 
         # FIX: type detection must run on the RAW title - _clean_title now
         # strips "مسلسل"/"انمي" as leading content-type words, so checking

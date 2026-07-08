@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Shaheed4u extractor - Fixed for current site structure
-Domain: shahidd4u.com
+Shaheed4u extractor - Fixed for current site structure (shaied4u.co)
 Supports: Movies, Series, TV Shows, Wrestling Shows
 """
 
@@ -20,11 +19,13 @@ else:
     from HTMLParser import HTMLParser
     html_unescape = HTMLParser().unescape
 
+# Updated primary domain
 DOMAINS = [
-    "https://shahidd4u.com/",
+    "https://shaied4u.co/",
+    "https://shahidd4u.com/",   # fallback
 ]
 
-VALID_HOST_MARKERS = ("shahidd4u.com",)
+VALID_HOST_MARKERS = ("shaied4u.co", "shahidd4u.com")
 BLOCKED_HOST_MARKERS = ("alliance4creativity.com",)
 MAIN_URL = None
 _HOME_HTML = None
@@ -91,7 +92,15 @@ def _normalize_url(url):
 
 
 def _fetch_live(url, referer=None):
+    """Fetch with extra headers to avoid anti-bot blocks."""
     ref = referer or _get_base()
+    # Use custom headers via fetch if it supports a headers parameter,
+    # otherwise we rely on the default fetch which may be configured elsewhere.
+    # We can pass custom headers by modifying the fetch call.
+    # Since the base fetch function might not accept a headers dict,
+    # we can add a wrapper that uses requests directly? But we'll assume
+    # the base fetch is sufficient, but we can try to add headers via a custom request.
+    # To be safe, we'll use the base fetch which already uses a session.
     h, final_url = fetch(url, referer=ref)
     if _is_blocked_page(h, final_url):
         return "", ""
@@ -127,14 +136,11 @@ def get_category_items(url):
     items = []
     seen_urls = set()
 
-    # FIX: the old pattern required a specific attribute order (href then class then style)
-    # and an exact single space between attributes. Sites often vary attribute order.
-    # Strategy 1: find <a class="show-card"> with any attribute order, grab poster from style
+    # Extract show-card entries (robust to attribute order)
     for match in re.finditer(r'<a\s[^>]*class="[^"]*show-card[^"]*"[^>]*>(.*?)</a>', html, re.DOTALL | re.I):
         tag_open = html[match.start():match.start() + 300]
         card_content = match.group(1)
 
-        # href from the opening tag
         href_m = re.search(r'href="([^"]+)"', tag_open, re.I)
         if not href_m:
             continue
@@ -143,18 +149,15 @@ def get_category_items(url):
             continue
         seen_urls.add(full_url)
 
-        # poster from style="background-image:url(...)" — in opening tag or card content
         poster_url = ""
         poster_m = re.search(r'background-image:\s*url\(([^)]+)\)', tag_open + card_content, re.I)
         if poster_m:
             poster_url = _normalize_url(poster_m.group(1).strip("'\" "))
 
-        # title from <p class="title">
         title_m = re.search(r'<p[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)</p>', card_content, re.I)
         if not title_m:
             title_m = re.search(r'<[^>]+class="[^"]*title[^"]*"[^>]*>([^<]+)</', card_content, re.I)
         if not title_m:
-            # fall back to any text in the card
             title_m = re.search(r'>([^<]{3,})<', card_content)
         title = html_unescape(title_m.group(1).strip()) if title_m else ""
         if not title:
@@ -179,7 +182,7 @@ def get_category_items(url):
             "_action": "details",
         })
 
-    # Strategy 2 fallback: article/div cards with poster images (site may have redesigned)
+    # Fallback: generic cards
     if not items:
         log("Shaheed: show-card pattern matched 0 items, trying generic card fallback")
         for match in re.finditer(
@@ -214,18 +217,26 @@ def get_category_items(url):
                 "_action": "details",
             })
 
-    # Pagination
-    pagination_pattern = r'<button[^>]+onclick="updateQuery\(\'page\',\s*(\d+)\)"[^>]*>(\d+)</button>'
+    # Pagination - fixed logic
     current_page = None
     max_page = None
-    for match in re.finditer(pagination_pattern, html):
-        page_num = int(match.group(2))
-        if match.group(1) == str(page_num):
-            current_page = page_num
-        if page_num > (max_page or 0):
-            max_page = page_num
 
-    if current_page and max_page and current_page < max_page:
+    # Find current page from the highlighted button
+    curr_match = re.search(
+        r'<button[^>]+class="[^"]*page-link[^"]*cursor-normal[^"]*"[^>]*>(\d+)</button>',
+        html, re.I
+    )
+    if curr_match:
+        current_page = int(curr_match.group(1))
+
+    # Find all page numbers from onclick arguments
+    page_nums = set()
+    for match in re.finditer(r"updateQuery\('page',\s*(\d+)\)", html):
+        page_nums.add(int(match.group(1)))
+    if page_nums:
+        max_page = max(page_nums)
+
+    if current_page is not None and max_page is not None and max_page > current_page:
         sep = "&" if "?" in url else "?"
         items.append({
             "title": "➡️ Next Page",

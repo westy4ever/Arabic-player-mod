@@ -327,7 +327,22 @@ def _category_from_home(label, fallback):
 
 def _decode_wecima_url(encoded):
     """
-    Decode Wecima's obfuscated URLs with robust sanitisation.
+    Decode Wecima's obfuscated URLs.
+
+    Confirmed (via 5 real captured samples) that Wecima's obfuscation:
+      1. Strips a short leading fragment of the true base64 string - the
+         5-character fragment "aHR0c" (part of the base64 encoding of
+         "https") - before embedding it in the page.
+      2. Inserts literal '+' characters as noise at scattered positions
+         within what remains. These are NOT real base64 '+' characters
+         (base64 padding/alphabet) even though '+' is technically a valid
+         base64 character - they're junk inserted specifically to break
+         naive decoders, and must be stripped, not preserved.
+    Both corrections are required together; doing only one still produces
+    garbage. Falls back to a couple of alternate prefix guesses (in case
+    of plain http:// or a differently-sized stripped fragment) before
+    giving up on the structured decode and trying a plain URL-pattern
+    scan as a last resort.
     """
     if not encoded:
         return None
@@ -335,57 +350,58 @@ def _decode_wecima_url(encoded):
     log("Wecima: decoding: {}".format(repr(encoded[:80])))
 
     try:
-        # 1. Clean and sanitise – keep only Base64-valid chars
-        cleaned = encoded.strip().replace(' ', '+')
-        # Remove any character that is not valid Base64
-        cleaned = re.sub(r'[^A-Za-z0-9+/=]', '', cleaned)
+        raw = encoded.strip().replace(' ', '')
+        # Strip the inserted '+' noise, then keep only genuine Base64
+        # characters (this also drops any other stray junk).
+        stripped = re.sub(r'[^A-Za-z0-9/=]', '', raw.replace('+', ''))
 
-        # 2. Fix padding
-        missing_padding = len(cleaned) % 4
-        if missing_padding:
-            cleaned += '=' * (4 - missing_padding)
-
-        # 3. Decode
-        decoded_bytes = base64.b64decode(cleaned)
-
-        # 4. Try to decode as ASCII first (the URL should be ASCII)
-        # If it fails, fallback to UTF‑8, then to latin‑1, but ignore errors
-        for encoding in ('ascii', 'utf-8', 'latin-1'):
+        # Try the confirmed case first (missing "https" fragment), then a
+        # couple of plausible fallbacks, keeping whichever candidate
+        # actually decodes to something URL-shaped.
+        for prefix in ('aHR0c', 'aHR0', ''):
+            candidate = prefix + stripped
+            candidate += '=' * (-len(candidate) % 4)
             try:
-                decoded_url = decoded_bytes.decode(encoding)
-                break
-            except UnicodeDecodeError:
+                decoded_bytes = base64.b64decode(candidate)
+            except Exception:
                 continue
-        else:
-            # If all fail, use 'replace' to avoid crashing
-            decoded_url = decoded_bytes.decode('ascii', errors='replace')
 
-        # 5. Clean up common escape sequences
-        decoded_url = decoded_url.replace('\\u0026', '&').replace('\\/', '/')
+            decoded_url = None
+            for enc in ('ascii', 'utf-8', 'latin-1'):
+                try:
+                    decoded_url = decoded_bytes.decode(enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if decoded_url is None:
+                continue
 
-        # 6. Apply URL quoting for any remaining non‑ASCII (should be rare now)
-        decoded_url = quote(decoded_url, safe=':/?&=#+')
+            decoded_url = decoded_url.replace('\\u0026', '&').replace('\\/', '/')
 
-        # 7. Fix protocol if missing
-        if decoded_url.startswith('//'):
-            decoded_url = 'https:' + decoded_url
-        elif decoded_url.startswith('https') and not decoded_url.startswith('https://'):
-            decoded_url = 'https://' + decoded_url[5:]
-        elif decoded_url.startswith('http') and not decoded_url.startswith('http://'):
-            decoded_url = 'http://' + decoded_url[4:]
+            http_idx = decoded_url.find('http')
+            if http_idx == -1:
+                continue
+            decoded_url = decoded_url[http_idx:]
+            decoded_url = quote(decoded_url, safe=':/?&=#+')
 
-        # Validate it looks like a real URL
-        if decoded_url and ('http://' in decoded_url or 'https://' in decoded_url):
-            log("Wecima: decode success: {}".format(decoded_url[:80]))
-            return decoded_url
-        else:
-            log("Wecima: decoded but doesn't look like URL: {}".format(repr(decoded_url[:80])))
+            if decoded_url.startswith('http://') or decoded_url.startswith('https://'):
+                pass  # already correctly formatted
+            elif decoded_url.startswith('https'):
+                decoded_url = 'https://' + decoded_url[5:]
+            elif decoded_url.startswith('http'):
+                decoded_url = 'http://' + decoded_url[4:]
+
+            if decoded_url.startswith('http://') or decoded_url.startswith('https://'):
+                log("Wecima: decode success: {}".format(decoded_url[:80]))
+                return decoded_url
+
+        log("Wecima: decode did not produce a URL for: {}".format(repr(encoded[:80])))
 
     except Exception as e:
         log("Wecima: decode failed: {}".format(str(e)[:50]))
 
     # Fallback: try to extract a plain URL pattern directly
-    url_pattern = r'[a-zA-Z0-9\-]+\.(?:com|net|org|tv|cx|bid|site|click|show|video|rent|date|live|rip|top|xyz)(?:/[a-zA-Z0-9\-_/]+)?'
+    url_pattern = r'[a-zA-Z0-9\-]+\.(?:com|net|org|tv|cx|bid|site|click|show|video|rent|date|live|rip|top|xyz|ps)(?:/[a-zA-Z0-9\-_/]+)?'
     match = re.search(url_pattern, encoded)
     if match:
         url = "https://" + match.group(0)

@@ -97,6 +97,56 @@ def _get_cached_poster(url):
         return path
     return None
 
+
+def _fetch_poster_bytes(url, referer, timeout=7):
+    """Fetch poster image bytes, working around WebP images that Enigma2's
+    native picture decoder (ePicLoad) frequently can't render at all.
+
+    FIX: confirmed some posters on sites like topcinemaa.top are served as
+    .webp while most are .jpg (likely a WordPress image-optimization
+    plugin converting only some uploads). The download itself always
+    succeeds (200 OK), but the native decode step silently fails for
+    WebP with no Python-level exception - explaining posters that work
+    for "most" media but silently fail for "a few", specifically. Tries,
+    in order: (1) fetch normally and convert via PIL if the site returned
+    webp and PIL happens to be available, (2) fetch a same-named .jpg
+    variant instead (WordPress WebP-conversion plugins typically keep the
+    original accessible), (3) fall back to the raw bytes as before.
+    """
+    req = urllib2.Request(url, headers={"User-Agent": SAFE_UA, "Referer": referer})
+    data = urllib2.urlopen(req, timeout=timeout).read()
+
+    looks_like_webp = url.lower().split("?", 1)[0].endswith(".webp") or data[:4] == b"RIFF"
+    if not looks_like_webp:
+        return data
+
+    # Attempt 1: convert in-memory via PIL, if available on this device
+    try:
+        from PIL import Image
+        import io
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        out = io.BytesIO()
+        img.save(out, format="JPEG")
+        return out.getvalue()
+    except Exception:
+        pass
+
+    # Attempt 2: try a same-named .jpg variant instead
+    try:
+        alt_url = re.sub(r'\.webp(\?.*)?$', lambda m: ".jpg" + (m.group(1) or ""), url, flags=re.I)
+        if alt_url != url:
+            alt_req = urllib2.Request(alt_url, headers={"User-Agent": SAFE_UA, "Referer": referer})
+            alt_data = urllib2.urlopen(alt_req, timeout=timeout).read()
+            if alt_data:
+                return alt_data
+    except Exception:
+        pass
+
+    # Last resort: original webp bytes (same as previous behavior - may
+    # still fail to render, but no worse than before this fix)
+    return data
+
+
 # ─── Extractor Factory ───────────────────────────────────────────────────────
 _EXTRACTOR_MAP = {
     "egydead":    "extractors.egydead",
@@ -206,7 +256,13 @@ def _clean_title_for_tmdb(title):
     if not title: return ""
     junk = [
         u"مترجم", u"اون لاين", u"بجودة", u"عالية", u"كامل", u"تحميل", u"مشاهدة", u"فيلم", u"مسلسل",
-        u"انمي", u"كرتون", u"حصري", u"شاشه", u"كامله", u"نسخة", u"اصلية", u"bluray", u"web-dl", u"hdtv", u"720p", u"1080p", u"4k"
+        u"انمي", u"كرتون", u"حصري", u"شاشه", u"كامله", u"نسخة", u"اصلية", u"bluray", u"web-dl", u"hdtv", u"720p", u"1080p", u"4k",
+        # FIX: site-branding words weren't in this list, so queries like
+        # "Worth the Wait 2025 توب سينما" (confirmed in logs) were sent to
+        # TMDb as-is and returned zero results, silently losing whatever
+        # TMDb-sourced enrichment (poster/plot/rating) that title would
+        # otherwise have gotten.
+        u"توب سينما", u"عرب سيد", u"فاصل اعلاني", u"faselhd",
     ]
     title = title.lower()
     for word in junk:
@@ -365,8 +421,8 @@ def _decorate_item_title(item, site=None):
     # Check if this is actually a movie from a filter page
     if item_type == "category" and item.get("url") and "release-year" in item.get("url", ""):
         # This is a movie from filter page, show as movie
-        return "[فيلم] {}".format(title)
-    
+        return title
+
     if item_type == "movie":
         prefix = "[فيلم]"
     elif item_type == "series":
@@ -380,13 +436,16 @@ def _decorate_item_title(item, site=None):
         prefix = "•"
 
     item_site = item.get("_site") or site
-    
+
+    # FIX: user requested the "[فيلم]"/"[مسلسل]"/"[حلقة]" bracket prefix be
+    # removed from list display entirely - just show the clean title.
+    if item_type in ("movie", "series", "episode"):
+        return title
+
     # Only show site label for tools, not for movies/series/episodes
-    if item_site and item_type in ("movie", "series", "episode"):
-        return "{} {}".format(prefix, title)
-    elif item_site and item_type == "tool":
+    if item_site and item_type == "tool":
         return "{} [{}] {}".format(prefix, _site_label(item_site), title)
-    
+
     return "{} {}".format(prefix, title)
 
 
@@ -1484,8 +1543,7 @@ class ArabicPlayerHome(Screen):
             from urllib.parse import urlparse as _urlparse
             _p = _urlparse(url)
             referer = "{}://{}/".format(_p.scheme, _p.netloc)
-            req = urllib2.Request(url, headers={"User-Agent": SAFE_UA, "Referer": referer})
-            data = urllib2.urlopen(req, timeout=7).read()
+            data = _fetch_poster_bytes(url, referer, timeout=7)
 
             with self._poster_lock:
                 if url != self._requested_poster_url: return
@@ -2342,8 +2400,7 @@ class ArabicPlayerDetail(Screen):
             from urllib.parse import urlparse as _urlparse
             _p = _urlparse(url)
             referer = "{}://{}/".format(_p.scheme, _p.netloc)
-            req = urllib2.Request(url, headers={"User-Agent": SAFE_UA, "Referer": referer})
-            data = urllib2.urlopen(req, timeout=10).read()
+            data = _fetch_poster_bytes(url, referer, timeout=10)
 
             save_path = cache_path or "/tmp/ap_detail_{}.jpg".format(int(time.time()))
             with open(save_path, "wb") as f:
