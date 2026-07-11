@@ -329,78 +329,80 @@ def _decode_wecima_url(encoded):
     """
     Decode Wecima's obfuscated URLs.
 
-    Confirmed (via 5 real captured samples) that Wecima's obfuscation:
-      1. Strips a short leading fragment of the true base64 string - the
-         5-character fragment "aHR0c" (part of the base64 encoding of
-         "https") - before embedding it in the page.
-      2. Inserts literal '+' characters as noise at scattered positions
-         within what remains. These are NOT real base64 '+' characters
-         (base64 padding/alphabet) even though '+' is technically a valid
-         base64 character - they're junk inserted specifically to break
-         naive decoders, and must be stripped, not preserved.
-    Both corrections are required together; doing only one still produces
-    garbage. Falls back to a couple of alternate prefix guesses (in case
-    of plain http:// or a differently-sized stripped fragment) before
-    giving up on the structured decode and trying a plain URL-pattern
-    scan as a last resort.
+    FIX: confirmed against 5 real encoded values from a live watch page,
+    each cross-checked against the actual working stream URL for that
+    server. The site's current scheme is NOT plain base64 - it:
+      1. base64-encodes the URL normally
+      2. drops the leading 5 characters ("aHR0c", the truncated start of
+         the "https://" encoding)
+      3. inserts literal "+" junk characters at intervals
+    The old decoder treated "+" as a real base64 character (it's not -
+    it's junk) and never restored the missing prefix, so decoding always
+    produced garbage and every single server was silently dropped
+    ("No servers found" in every real test). Confirmed working example:
+    "HM6Ly9zYXZlZmls+ZXMuY29tL2UvMz+RsbGl3YjViOHJo" -> decodes correctly
+    to "https://savefiles.com/e/34lliwb5b8rh" once "+" is stripped and
+    "aHR0c" is restored as the prefix.
     """
     if not encoded:
         return None
 
     log("Wecima: decoding: {}".format(repr(encoded[:80])))
 
+    # Primary: the confirmed current scheme (strip "+" junk, restore the
+    # missing "aHR0c" prefix)
     try:
-        raw = encoded.strip().replace(' ', '')
-        # Strip the inserted '+' noise, then keep only genuine Base64
-        # characters (this also drops any other stray junk).
-        stripped = re.sub(r'[^A-Za-z0-9/=]', '', raw.replace('+', ''))
-
-        # Try the confirmed case first (missing "https" fragment), then a
-        # couple of plausible fallbacks, keeping whichever candidate
-        # actually decodes to something URL-shaped.
-        for prefix in ('aHR0c', 'aHR0', ''):
-            candidate = prefix + stripped
-            candidate += '=' * (-len(candidate) % 4)
-            try:
-                decoded_bytes = base64.b64decode(candidate)
-            except Exception:
-                continue
-
-            decoded_url = None
-            for enc in ('ascii', 'utf-8', 'latin-1'):
-                try:
-                    decoded_url = decoded_bytes.decode(enc)
-                    break
-                except UnicodeDecodeError:
-                    continue
-            if decoded_url is None:
-                continue
-
-            decoded_url = decoded_url.replace('\\u0026', '&').replace('\\/', '/')
-
-            http_idx = decoded_url.find('http')
-            if http_idx == -1:
-                continue
-            decoded_url = decoded_url[http_idx:]
-            decoded_url = quote(decoded_url, safe=':/?&=#+')
-
-            if decoded_url.startswith('http://') or decoded_url.startswith('https://'):
-                pass  # already correctly formatted
-            elif decoded_url.startswith('https'):
-                decoded_url = 'https://' + decoded_url[5:]
-            elif decoded_url.startswith('http'):
-                decoded_url = 'http://' + decoded_url[4:]
-
-            if decoded_url.startswith('http://') or decoded_url.startswith('https://'):
-                log("Wecima: decode success: {}".format(decoded_url[:80]))
-                return decoded_url
-
-        log("Wecima: decode did not produce a URL for: {}".format(repr(encoded[:80])))
-
+        cleaned = encoded.strip().replace(' ', '+').replace('+', '')
+        cleaned = re.sub(r'[^A-Za-z0-9/=]', '', cleaned)
+        fixed = 'aHR0c' + cleaned
+        missing_padding = len(fixed) % 4
+        if missing_padding:
+            fixed += '=' * (4 - missing_padding)
+        decoded_bytes = base64.b64decode(fixed)
+        decoded_url = decoded_bytes.decode('utf-8', errors='replace')
+        decoded_url = decoded_url.replace('\\u0026', '&').replace('\\/', '/')
+        if decoded_url.startswith('http://') or decoded_url.startswith('https://'):
+            log("Wecima: decode success (prefix scheme): {}".format(decoded_url[:80]))
+            return decoded_url
     except Exception as e:
-        log("Wecima: decode failed: {}".format(str(e)[:50]))
+        log("Wecima: prefix-scheme decode failed: {}".format(str(e)[:50]))
 
-    # Fallback: try to extract a plain URL pattern directly
+    # Fallback: try the string as plain, unmodified base64 (in case the
+    # site changes scheme again, or some servers use a different format)
+    try:
+        cleaned = encoded.strip().replace(' ', '+')
+        cleaned = re.sub(r'[^A-Za-z0-9+/=]', '', cleaned)
+        missing_padding = len(cleaned) % 4
+        if missing_padding:
+            cleaned += '=' * (4 - missing_padding)
+        decoded_bytes = base64.b64decode(cleaned)
+
+        for encoding in ('ascii', 'utf-8', 'latin-1'):
+            try:
+                decoded_url = decoded_bytes.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            decoded_url = decoded_bytes.decode('ascii', errors='replace')
+
+        decoded_url = decoded_url.replace('\\u0026', '&').replace('\\/', '/')
+        decoded_url = quote(decoded_url, safe=':/?&=#+')
+
+        if decoded_url.startswith('//'):
+            decoded_url = 'https:' + decoded_url
+        elif decoded_url.startswith('https') and not decoded_url.startswith('https://'):
+            decoded_url = 'https://' + decoded_url[5:]
+        elif decoded_url.startswith('http') and not decoded_url.startswith('http://'):
+            decoded_url = 'http://' + decoded_url[4:]
+
+        if decoded_url and ('http://' in decoded_url or 'https://' in decoded_url):
+            log("Wecima: decode success (plain b64 fallback): {}".format(decoded_url[:80]))
+            return decoded_url
+    except Exception as e:
+        log("Wecima: plain-b64 decode failed: {}".format(str(e)[:50]))
+
+    # Last resort: try to extract a plain URL pattern directly
     url_pattern = r'[a-zA-Z0-9\-]+\.(?:com|net|org|tv|cx|bid|site|click|show|video|rent|date|live|rip|top|xyz|ps)(?:/[a-zA-Z0-9\-_/]+)?'
     match = re.search(url_pattern, encoded)
     if match:
@@ -408,6 +410,7 @@ def _decode_wecima_url(encoded):
         log("Wecima: extracted URL pattern: {}".format(url))
         return url
 
+    log("Wecima: decode failed entirely for: {}".format(repr(encoded[:80])))
     return None
 
 
@@ -742,11 +745,23 @@ def extract_stream(url):
     try:
         stream_url, quality, ref = base_extract_stream(url)
         if stream_url:
-            # Override the referer to Wecima's base URL
-            # because the stream host (savefiles, etc.) needs the embed page's referer.
-            wecima_referer = _get_base()
-            log("Wecima: base_extract_stream returned: {} (quality: {})".format(stream_url[:80], quality))
-            return stream_url, quality, wecima_referer
+            # FIX: this used to unconditionally override the referer to
+            # wecima.cx's own homepage. But the resolved stream lives on a
+            # completely different domain (savefiles.com, doodstream.com,
+            # mixdrop.ps, etc.) - these CDN hosts validate the Referer
+            # header against THEIR OWN embed page, not the original site
+            # that linked to them. Sending wecima.cx as the referer for a
+            # savefiles.com stream request gets correctly rejected by
+            # their hotlink protection. This is the direct explanation for
+            # "works on PC (often no/lenient referer enforcement when
+            # testing directly), not on Enigma2 (strict header handling)":
+            # trust whatever referer base_extract_stream()'s own per-host
+            # resolver logic already determined, only falling back to
+            # wecima's own URL if none was returned at all.
+            final_ref = ref or _get_base()
+            log("Wecima: base_extract_stream returned: {} (quality: {}, referer: {})".format(
+                stream_url[:80], quality, final_ref))
+            return stream_url, quality, final_ref
     except Exception as e:
         log("Wecima: base_extract_stream error: {}".format(str(e)[:50]))
     
@@ -758,8 +773,11 @@ def extract_stream(url):
             from .base import find_m3u8, find_mp4, _best_media_url
             stream = find_m3u8(html) or find_mp4(html) or _best_media_url(html)
             if stream:
+                # FIX: same referer issue as above - the stream was found
+                # on the embed page itself (final_url), not on wecima, so
+                # that page is the correct referer for actually playing it.
                 log("Wecima: manual fallback found: {}".format(stream[:80]))
-                return stream, "HD", _get_base()
+                return stream, "HD", (final_url or url)
     except Exception as e:
         log("Wecima: manual fallback error: {}".format(str(e)[:50]))
     

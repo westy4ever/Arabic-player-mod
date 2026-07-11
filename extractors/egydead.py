@@ -20,6 +20,110 @@ else:
 
 MAIN_URL = "https://tv10.egydead.live/"
 
+# FIX: MAIN_URL was a single hardcoded domain with no fallback. A fresh
+# snapshot's own canonical tag confirms the site has already moved to
+# egydead.fyi - the exact same "mirror domain rotated, hardcoded URL now
+# dead" pattern that broke every other site in this addon at some point
+# (arabseed's asd.pics, topcinema's numeric CDN prefix, wecima's
+# wecima.click). "Categories not working" while HTML parsing itself is
+# fine (confirmed independently) points squarely at the fetch step
+# failing against a stale domain. Ported the same resilient probing
+# pattern already working in wecima.py: try each known/likely domain in
+# order, verify the response actually looks like this site (not a
+# challenge page or unrelated squatted domain), and cache whichever one
+# responds. Falls back to the old hardcoded domain only if every
+# candidate fails, so this never behaves worse than before.
+#
+# tv9.egydead.live is this file's own ORIGINAL domain (see the module
+# docstring above, never updated when the code moved to tv10) - meaning
+# this site has now rotated through at least 3 domains: tv9 -> tv10 ->
+# egydead.fyi, a clear numbered-mirror pattern. Kept as a last-resort
+# fallback in case tv10 ever goes down and a user's DNS/cache still
+# resolves the older one.
+DOMAINS = [
+    "https://egydead.fyi/",
+    "https://tv10.egydead.live/",
+    "https://tv9.egydead.live/",
+]
+VALID_HOST_MARKERS = ("egydead.fyi", "egydead.live", "egydead.com", "egydead")
+BLOCKED_HOST_MARKERS = ("alliance4creativity.com",)
+_RESOLVED_BASE = None
+
+
+def _host(url):
+    try:
+        return (urlparse(url).netloc or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_valid_site_url(url):
+    # FIX: this was defined (VALID_HOST_MARKERS) but never actually used -
+    # content-only validation (_looks_like_egydead_page) is weak on its
+    # own, since any page merely mentioning the word "egydead" somewhere
+    # would pass. Combine a host check with the content check, matching
+    # wecima.py's dual validation, so a redirect to an unrelated domain
+    # can't slip through just because the word appears in its text.
+    host = _host(url)
+    if not host:
+        return False
+    if any(m in host for m in BLOCKED_HOST_MARKERS):
+        return False
+    return any(m in host for m in VALID_HOST_MARKERS)
+
+
+def _is_blocked_page(html, final_url=""):
+    text = (html or "").lower()
+    final = (final_url or "").lower()
+    if not text:
+        return True
+    if "just a moment" in text and ("cf-chl" in text or "challenge" in text):
+        return True
+    if "enable javascript and cookies to continue" in text:
+        return True
+    if any(m in final for m in BLOCKED_HOST_MARKERS):
+        return True
+    return False
+
+
+def _looks_like_egydead_page(html):
+    text = html or ""
+    return (
+        "movieItem" in text
+        or "BottomTitle" in text
+        or "egydead" in text.lower()
+    )
+
+
+def _site_root(url):
+    parts = urlparse(url)
+    return "{}://{}/".format(parts.scheme or "https", parts.netloc)
+
+
+def _get_base():
+    global MAIN_URL, _RESOLVED_BASE
+    if _RESOLVED_BASE:
+        return _RESOLVED_BASE
+    for domain in DOMAINS:
+        log("EgyDead: probing {}".format(domain))
+        html, final_url = fetch(domain, referer=domain)
+        final_url = final_url or domain
+        if not _is_valid_site_url(final_url):
+            log("EgyDead: unexpected host after redirect {}".format(final_url))
+            continue
+        if _is_blocked_page(html, final_url):
+            log("EgyDead: blocked {}".format(final_url))
+            continue
+        if html and _looks_like_egydead_page(html):
+            _RESOLVED_BASE = _site_root(final_url)
+            MAIN_URL = _RESOLVED_BASE
+            log("EgyDead: selected base {}".format(_RESOLVED_BASE))
+            return _RESOLVED_BASE
+    _RESOLVED_BASE = DOMAINS[0]
+    MAIN_URL = _RESOLVED_BASE
+    log("EgyDead: all probes failed, falling back to {}".format(_RESOLVED_BASE))
+    return _RESOLVED_BASE
+
 _CLEAN_WORDS = [
     "مشاهدة فيلم", "مشاهدة", "فيلم", "مسلسل",
     "مترجمة اون لاين", "مترجم اون لاين",
@@ -51,7 +155,7 @@ def _full_url(path):
     if path.startswith("//"):
         path = "https:" + path
     elif not path.startswith("http"):
-        path = urljoin(MAIN_URL, path)
+        path = urljoin(_get_base(), path)
     try:
         path = quote(unquote(path), safe=':/?&=#+')
     except Exception:
@@ -146,7 +250,7 @@ def _fetch(url, referer=None, post_data=None):
     
     return fetch(
         encoded_url,
-        referer=referer or MAIN_URL,
+        referer=referer or _get_base(),
         extra_headers=extra if extra else None,
         post_data=post_data,
     )
@@ -460,7 +564,7 @@ def get_category_items(url, page=None):
 
 def search(query, page=1):
     """Search for movies/series"""
-    search_url = MAIN_URL.rstrip("/") + "/?s=" + quote_plus(query)
+    search_url = _get_base().rstrip("/") + "/?s=" + quote_plus(query)
     if page > 1:
         search_url += f"&paged={page}"
     

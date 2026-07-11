@@ -111,25 +111,46 @@ def _extract_blocks(html):
 
         link = _normalize_url(href)
         poster = _normalize_url(poster)
-        # FIX: category-list posters are WordPress-generated resized
-        # thumbnail variants (e.g. "...-440x550.jpg"), while the
-        # reliably-working detail-page poster (og:image) is always the
-        # original full-size upload with no size suffix. WordPress
-        # thumbnail regeneration commonly misses a handful of images after
-        # theme/plugin changes, leaving just the resized variant 404ing
-        # while the original (which WordPress never deletes) still
-        # exists - this matches "poster works on the detail page but not
-        # in the list" for the same specific items. Strip the suffix to
-        # use the same reliable original file everywhere.
-        poster = re.sub(r'-\d+x\d+(?=\.\w+(?:\?.*)?$)', '', poster)
+        # NOTE: previously stripped the WordPress size suffix here (e.g.
+        # "-440x550.jpg" -> no suffix) to force the full-size original file,
+        # based on a theory that WordPress thumbnail regeneration might
+        # leave some resized variants missing. That was never confirmed and
+        # had a real, worse side effect: full-size originals are 100-670KB
+        # vs. ~25-60KB for the small list thumbnail, and in a fast-scrolling
+        # category list every poster request gets superseded the moment the
+        # selection moves on - confirmed via logs that 9/9 full-size
+        # downloads lost that race and never displayed, while the small
+        # thumbnail (kept as-is below) reliably downloads fast enough to
+        # win it. Reverted to use the list thumbnail the site actually
+        # serves, unmodified.
 
         # FIX: type detection must run on the RAW title - _clean_title now
         # strips "مسلسل"/"انمي" as leading content-type words, so checking
         # the cleaned title here would always miss them and everything
         # would default to "movie".
-        item_type = "movie"
-        if "مسلسل" in title or "حلقة" in title or "انمي" in title:
+        #
+        # FIX: this used to lump ALL series-related items into a single
+        # "series" type based purely on keyword presence, regardless of
+        # URL - but this site has (at least) 3 distinct link kinds: pure
+        # hub links ("/series/name-مترجم/", no season number), season
+        # links ("/series/name-الموسم-N-مترجم/", has a season number but
+        # no episode number), and DIRECT EPISODE links from categories
+        # like "Latest Episodes" (root-level slug, e.g.
+        # ".../name-الموسم-N-الحلقة-M-مترجمة/", no "/series/" prefix at
+        # all). Confirmed via a real "Latest Episodes" category snapshot:
+        # titles like "House of the Dragon الموسم الثالث الحلقة 3" are
+        # direct, specific episode links, not generic series hubs.
+        # "/series/" is plain ASCII and safe to check even though href
+        # itself is percent-encoded; title is already decoded Arabic text.
+        if "الحلقة" in title and "/series/" not in link:
+            item_type = "episode"
+        elif "/series/" in link:
             item_type = "series"
+        elif "مسلسل" in title or "انمي" in title:
+            item_type = "series"
+            is_pure_hub = True  # best-effort guess for other layouts
+        else:
+            item_type = "movie"
 
         title = _clean_title(title)
 
@@ -271,6 +292,103 @@ def get_page(url):
             "url": s_url,
         })
 
+    # FIX: discovered a third page tier on this site not previously
+    # tested: a "series hub" page (e.g. "/series/مسلسل-silo-مترجم/") lists
+    # SEASONS, and each season page (e.g.
+    # "/series/مسلسل-silo-الموسم-الاول-مترجم/") lists that season's
+    # EPISODES - neither has its own /watch/ page or servers; only the
+    # individual episode pages (root-level slugs, no /series/ prefix) do.
+    # Confirmed via real snapshots: get_page() previously returned
+    # type="movie", 0 servers, 0 episodes for both hub and season pages,
+    # since the existing extraction only ever looked for the
+    # episodes--list--side sibling-nav pattern used by actual episode
+    # pages. Detect and handle these two tiers explicitly, before falling
+    # through to the existing per-episode extraction logic below.
+    is_hub_or_season = "/series/" in (final_url or url)
+
+    if is_hub_or_season:
+        # FIX: the season-tabs navigation (allseasonss) is shared UI that
+        # appears on BOTH the pure hub page AND individual season pages -
+        # confirmed via a real season-page snapshot where both containers
+        # were present at once, so appending both unconditionally produced
+        # a mixed list (3 season tiles + 10 episode tiles = 13, instead of
+        # the 10 actual episodes for that season). Episodes are the more
+        # specific, actionable content when present, so check for them
+        # first and only fall back to showing seasons when there's no
+        # episode list at all (the genuine hub-page case).
+        eps_m = re.search(
+            r'<section[^>]+class=["\'][^"\']*allepcont[^"\']*["\'][^>]*>(.*?)</section>',
+            html, re.S | re.I
+        )
+        if eps_m:
+            for e_link, e_title in re.findall(
+                r'<a[^>]+href=["\']([^"\']+)["\'][^>]+title=["\']([^"\']+)["\']',
+                eps_m.group(1), re.S | re.I
+            ):
+                e_link_norm = _normalize_url(e_link)
+                if not e_link_norm or e_link_norm == final_url:
+                    continue
+                e_text = _clean_title(e_title)
+                e_num_m = re.search(r'الحلقة\s*(\d+)', e_title)
+                episodes.append({
+                    "title": ("حلقة " + e_num_m.group(1)) if e_num_m else e_text,
+                    "url": e_link_norm,
+                    "type": "episode",
+                    "_action": "item"
+                })
+
+        if not episodes:
+            seasons_m = re.search(
+                r'<section[^>]+class=["\'][^"\']*allseasonss[^"\']*["\'][^>]*>(.*?)</section>',
+                html, re.S | re.I
+            )
+            found_seasons = []
+            if seasons_m:
+                for s_block in re.finditer(
+                    r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+                    seasons_m.group(1), re.S | re.I
+                ):
+                    s_link, s_inner = s_block.group(1), s_block.group(2)
+                    # FIX: real markup has an empty title="" attribute on
+                    # the <a> tag itself - the actual season name is in a
+                    # nested <h3 class="title">...</h3> instead.
+                    h3_m = re.search(r'<h3[^>]*class=["\']title["\'][^>]*>(.*?)</h3>', s_inner, re.S)
+                    s_text = h3_m.group(1).strip() if h3_m else re.sub(r'<[^>]+>', ' ', s_inner).strip()
+                    s_link_norm = _normalize_url(s_link)
+                    if s_link_norm and s_link_norm != final_url:
+                        found_seasons.append({
+                            "title": _clean_title(s_text) or "موسم",
+                            "url": s_link_norm,
+                            "type": "series",
+                            "_action": "item"
+                        })
+
+            # NOTE: previously auto-descended a pure hub page straight to
+            # Season 1 Episode 1's own servers, to avoid an extra picker
+            # step. Reverted - it made reaching any OTHER specific episode
+            # much worse: landing directly on episode 1 means plugin.py
+            # shows its servers first (by design, for a playable episode),
+            # which hides the episode list entirely, so getting to e.g.
+            # episode 8 required clicking "next episode" seven times
+            # instead of picking it directly from this list. A season/
+            # episode picker is a couple more clicks for the common case
+            # but is actually fast for picking ANY specific episode.
+            episodes = found_seasons
+
+        if episodes:
+            return {
+                "url": final_url,
+                "title": title,
+                "plot": plot,
+                "poster": poster,
+                "servers": [],
+                "items": episodes,
+                "type": "series"
+            }
+        # Fall through to the generic logic below if neither container was
+        # found - safer than returning an empty result outright in case
+        # this URL didn't actually match the hub/season pattern as expected.
+
     # Episodes extraction – only if the page looks like a series
     # FIX: must check raw_title, not the cleaned title - _clean_title now
     # strips "مسلسل" as a leading content-type word, so this would always
@@ -338,7 +456,16 @@ def get_page(url):
                 "_action": "item"
             })
 
-    if episodes:
+    # FIX: previously ANY non-empty episodes list (even alongside real
+    # servers) set type="series" - meaning an actual individual episode
+    # page (which has both its own servers AND a sibling-episode nav
+    # list) was indistinguishable from a pure hub/season page that has no
+    # servers of its own. This directly broke the priority fix in
+    # plugin.py, which relies on type=="episode" to know a page's own
+    # servers should be shown first rather than the sibling picker.
+    if servers and episodes:
+        item_type = "episode"
+    elif episodes:
         item_type = "series"
 
     return {

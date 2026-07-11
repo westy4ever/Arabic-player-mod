@@ -1017,18 +1017,44 @@ def _drain_cmit_queue():
         except Exception as _e:
             try: my_log("CMIT drain: {}".format(_e))
             except Exception: pass
+    # FIX: re-arm if new items arrived while draining (or slipped in via
+    # the race window this whole fix closes below) - a self-healing
+    # safety net so nothing enqueued during a drain is ever left stranded
+    # with no timer scheduled to deliver it.
+    with _CMIT_LOCK:
+        pending = bool(_CMIT_QUEUE)
+    if pending and _CMIT_TIMER is not None:
+        try: _CMIT_TIMER.start(50, True)
+        except Exception: pass
 
 
 def callInMainThread(func, *args, **kwargs):
     global _CMIT_TIMER
+    # FIX: confirmed via logs that an enqueued callback (self._onLoaded)
+    # can silently never be delivered - no exception, no log, nothing;
+    # the item just vanishes. Root cause: the queue append was
+    # lock-protected, but checking/arming the single SHARED eTimer
+    # happened OUTSIDE that lock. With this addon's heavy concurrent
+    # background traffic (many simultaneous poster downloads, category
+    # loads, and _bgLoad threads all calling this from different
+    # threads), two threads can race: one thread's drain can
+    # snapshot-and-clear the queue at the exact moment another thread's
+    # item gets appended, and if that second thread's own timer-arm call
+    # loses a race with eTimer's start/stop state (not thread-safe for
+    # concurrent access), the new item is left queued with no timer ever
+    # armed to deliver it - silently, forever. Moving the arm-check
+    # inside the SAME lock as the append makes the whole operation atomic
+    # per-thread, closing that window.
     with _CMIT_LOCK:
         _CMIT_QUEUE.append((func, args, kwargs))
-    if _CMIT_TIMER is None:
-        try:
-            _CMIT_TIMER = eTimer()
-            _CMIT_TIMER.callback.append(_drain_cmit_queue)
-        except Exception: pass
-    if _CMIT_TIMER is not None:
+        if _CMIT_TIMER is None:
+            try:
+                _CMIT_TIMER = eTimer()
+                _CMIT_TIMER.callback.append(_drain_cmit_queue)
+            except Exception:
+                _CMIT_TIMER = None
+        timer_ok = _CMIT_TIMER is not None
+    if timer_ok:
         try: _CMIT_TIMER.start(50, True)
         except Exception: pass
     else:
@@ -1382,6 +1408,9 @@ class ArabicPlayerHome(Screen):
             self._site = state.get("site", self._site)
             self._m_type = state.get("m_type", self._m_type)
             self._page = state.get("page", 1)
+            self._cat_url = state.get("cat_url", getattr(self, "_cat_url", None))
+            self._cat_name = state.get("cat_name", getattr(self, "_cat_name", ""))
+            self._next_page_url = state.get("next_page_url", None)
             items = state.get("items", [])
             header = state.get("header", {})
             if items:
@@ -1400,6 +1429,15 @@ class ArabicPlayerHome(Screen):
             "site": self._site,
             "m_type": self._m_type,
             "page": self._page,
+            # FIX: without these, backing into a paginated category list
+            # (after having navigated deeper, e.g. into a movie/series)
+            # and pressing "next page" again would use whatever
+            # _cat_url/_next_page_url happened to be current at that
+            # moment - not necessarily this specific list's own correct
+            # values.
+            "cat_url": getattr(self, "_cat_url", None),
+            "cat_name": getattr(self, "_cat_name", ""),
+            "next_page_url": getattr(self, "_next_page_url", None),
             "items": list(self._items),
             "header": {
                 "title": self["title_text"].getText(),
@@ -1422,6 +1460,16 @@ class ArabicPlayerHome(Screen):
         if ptr:
             self["poster"].instance.setPixmap(ptr)
             self["poster"].show()
+        else:
+            # FIX: this is the one remaining silent failure point in the
+            # poster pipeline - picLoad.startDecode() is Enigma2's native
+            # decoder; if it can't decode a file that downloaded
+            # successfully (corrupt data, an unsupported format that
+            # slipped past _fetch_poster_bytes' webp handling, etc.), ptr
+            # comes back empty with zero trace anywhere. Log it so this
+            # failure mode is finally visible instead of indistinguishable
+            # from "poster just never got requested".
+            my_log("_paintPoster (preview): native decode returned empty picture data")
 
     def _setList(self, items):
         self._items = items
@@ -1516,7 +1564,13 @@ class ArabicPlayerHome(Screen):
     def _downloadPoster(self, url):
         if not url: return
         with self._poster_lock:
-            if url != self._requested_poster_url: return
+            if url != self._requested_poster_url:
+                # FIX: this abort was completely silent before - a poster
+                # request superseded by a newer one (e.g. user scrolled to
+                # another item) looked identical in the log to every other
+                # kind of silent failure. Now it's distinguishable.
+                my_log("_downloadPoster (preview): superseded, skipping {}".format(url))
+                return
 
         try:
             if url.startswith("//"): url = "https:" + url
@@ -1530,6 +1584,7 @@ class ArabicPlayerHome(Screen):
 
             cached = _get_cached_poster(url)
             if cached:
+                my_log("_downloadPoster (preview): using cached file for {}".format(url))
                 with self._poster_lock:
                     if url != self._requested_poster_url: return
                 callInMainThread(self._display_poster_from_file, cached)
@@ -1543,20 +1598,37 @@ class ArabicPlayerHome(Screen):
             from urllib.parse import urlparse as _urlparse
             _p = _urlparse(url)
             referer = "{}://{}/".format(_p.scheme, _p.netloc)
+            my_log("_downloadPoster (preview): fetching {}".format(url))
             data = _fetch_poster_bytes(url, referer, timeout=7)
+            my_log("_downloadPoster (preview): downloaded {} bytes for {}".format(len(data) if data else 0, url))
+
+            # FIX: confirmed via logs that ~94% of preview poster downloads
+            # were being superseded by the time they completed (normal
+            # browsing pace, not just fast scrolling - each network fetch
+            # itself takes about a second, which is often longer than the
+            # time spent on any one item while scanning a list). The old
+            # code discarded the successfully-downloaded bytes entirely in
+            # that case, so even scrolling back to the exact same item
+            # moments later forced a full, wasted re-download from
+            # scratch every single time - this is why posters seemed to
+            # "persistently" never show up for many items across a whole
+            # session, not just transiently during the initial scroll.
+            # Save to disk regardless of whether display happens now, so
+            # any later visit to this item hits the cache instantly.
+            if cache_path:
+                with open(cache_path, "wb") as f:
+                    f.write(data)
+            else:
+                cache_path = "/tmp/ap_preview_{}.jpg".format(int(time.time()))
+                with open(cache_path, "wb") as f:
+                    f.write(data)
+                self._tmp_posters.append(cache_path)
 
             with self._poster_lock:
-                if url != self._requested_poster_url: return
-                if cache_path:
-                    with open(cache_path, "wb") as f:
-                        f.write(data)
-                    callInMainThread(self._display_poster_from_file, cache_path)
-                else:
-                    path = "/tmp/ap_preview_{}.jpg".format(int(time.time()))
-                    with open(path, "wb") as f:
-                        f.write(data)
-                    self._tmp_posters.append(path)
-                    callInMainThread(self._display_poster_from_file, path)
+                if url != self._requested_poster_url:
+                    my_log("_downloadPoster (preview): superseded after download, cached for next time {}".format(url))
+                    return
+                callInMainThread(self._display_poster_from_file, cache_path)
         except Exception as e:
             my_log("_downloadPoster preview error: {}".format(e))
             with self._poster_lock:
@@ -1566,9 +1638,20 @@ class ArabicPlayerHome(Screen):
     def _nextPage(self):
         cat_url  = getattr(self, "_cat_url",  None)
         cat_name = getattr(self, "_cat_name", "")
+        next_url = getattr(self, "_next_page_url", None)
         if self._source == "category" and cat_url:
             self._page += 1
-            self._loadCategory(cat_url, cat_name)
+            # FIX: use the real next-page URL captured in
+            # _onCategoryLoaded (from get_category_items()'s own returned
+            # pagination item) if available - this is what actually makes
+            # pagination work for topcinema and every other non-egydead
+            # site, which don't accept a page= parameter and instead
+            # encode the real next page as a full URL
+            # (".../category/x/page/2/") in their own results. Only egydead
+            # accepts page= directly, so it can keep using the counter with
+            # the original URL unchanged.
+            fetch_url = next_url if (next_url and self._site != "egydead") else cat_url
+            self._loadCategory(fetch_url, cat_name)
 
     def _showSiteCategories(self):
         self._push_nav_state()
@@ -1649,6 +1732,20 @@ class ArabicPlayerHome(Screen):
             self["status"].setText("لا توجد نتائج")
             self["menu"].setList(["لا توجد نتائج"])
             return
+        # FIX: confirmed via logs that pressing the dedicated "next page"
+        # button re-fetched the EXACT SAME base category URL every time
+        # (identical byte count across "page 2", "page 3", etc.) - only
+        # self._page (a counter used for the display header and egydead's
+        # own page= parameter) was being tracked, but the real, correct
+        # /page/N/ URL that get_category_items() already returns as a
+        # special list item (_action="category") was never captured or
+        # used for any other site. Store it here so _nextPage() can use
+        # the genuine URL instead of blindly reusing the original one.
+        next_page_item = next(
+            (i for i in items if i.get("_action") == "category" and i.get("url")),
+            None
+        )
+        self._next_page_url = next_page_item["url"] if next_page_item else None
         self._setHeader(
             "{} — صفحة {}".format(self._cat_name, self._page),
             "المصدر: {}".format(_site_label(self._site))
@@ -1758,11 +1855,18 @@ class ArabicPlayerHome(Screen):
         self._setList(items)
 
     def _openItem(self, item):
+        # FIX: every extractor (topcinema, arabseed, wecima, egydead) tags
+        # items with a "type" key ("movie"/"series"/"episode") - none of
+        # them ever set "_m_type". This always silently missed the item's
+        # real type and fell back to self._m_type (the screen's own
+        # context default) instead - confirmed in logs: a series hub item
+        # opened with m_type="movie" even though topcinema.py correctly
+        # returns type="series" for that exact URL.
         self.session.open(
             ArabicPlayerDetail,
             item=item,
             site=item.get("_site", self._site),
-            m_type=item.get("_m_type", self._m_type)
+            m_type=item.get("type", self._m_type)
         )
 
 
@@ -2121,6 +2225,30 @@ class ArabicPlayerDetail(Screen):
         self._tmp_posters = []
         self._poster_loaded = False
         self._raw_title = ""
+        # FIX: background loading (_bgLoad) can still be mid-flight (e.g.
+        # waiting on a slow arabseeds.cam request) when the user backs out
+        # of this screen. Enigma2's Screen.close() leaves the object
+        # eligible for cleanup, and later attribute access from the
+        # lingering thread can fail with "object has no attribute '_item'"
+        # (confirmed in logs). This flag lets background threads notice
+        # the screen is gone and bail out instead of touching torn-down
+        # state.
+        self._closed = False
+
+        # FIX: confirmed via logs that multiple _bgExtract threads can run
+        # concurrently - e.g. Server 4's extraction started while Server
+        # 3's doodstream mirror-domain fallback loop was still actively
+        # running, several seconds apart. Each extraction can take 10+
+        # seconds (looping through ~15 doodstream mirrors alone), so any
+        # repeated OK press or fast re-selection stacks up overlapping
+        # in-flight threads, all sharing the same status label and racing
+        # to set self._servers-derived UI state. This token, incremented
+        # on every new selection, lets a stale thread's result be safely
+        # discarded if a newer selection has since superseded it -
+        # matching the pattern already used for poster requests below.
+        self._extract_lock = threading.Lock()
+        self._extract_token = 0
+        self._extracting = False
 
         self["bg"]     = Label("")
         self["poster_box"] = Label("")
@@ -2164,12 +2292,20 @@ class ArabicPlayerDetail(Screen):
         self.onExecBegin.append(self._refreshPoster)
 
     def _load(self):
-        threading.Thread(target=self._bgLoad, args=(self._site, self._item["url"], self._m_type), daemon=True).start()
+        # FIX: snapshot self._item now, at thread-spawn time, rather than
+        # letting the background thread re-read self._item later after
+        # potentially long, slow network calls - if the user backs out of
+        # this screen while a request is still in flight, self._item can
+        # become inaccessible by the time the thread resumes (confirmed in
+        # logs: "'ArabicPlayerDetail' object has no attribute '_item'").
+        item_snapshot = self._item
+        threading.Thread(target=self._bgLoad, args=(self._site, item_snapshot, self._m_type), daemon=True).start()
 
-    def _bgLoad(self, site, url, m_type):
+    def _bgLoad(self, site, item, m_type):
+        url = item["url"]
         _done = [False]
         def _watchdog():
-            if not _done[0]:
+            if not _done[0] and not getattr(self, "_closed", False):
                 my_log("_bgLoad watchdog: timeout for {}".format(url[:60]))
                 callInMainThread(self["status"].setText, u"Timeout — please try again")
         _wt = threading.Timer(30, _watchdog)
@@ -2181,23 +2317,32 @@ class ArabicPlayerDetail(Screen):
             extractor = _get_extractor(site)
             get_page = getattr(extractor, "get_page", None)
             if not get_page:
-                callInMainThread(self["status"].setText, u"لا توجد بيانات")
+                if not getattr(self, "_closed", False):
+                    callInMainThread(self["status"].setText, u"لا توجد بيانات")
                 return
             if site == "egydead":
                 data = get_page(url, m_type=m_type)
             else:
                 data = get_page(url)
-            merged_seed = dict(self._item or {})
+            merged_seed = dict(item or {})
             merged_seed.update(data or {})
             data = _merge_tmdb_data(merged_seed)
             _done[0] = True
+            if getattr(self, "_closed", False):
+                log("Detail _bgLoad: screen closed before load finished, discarding result for {}".format(url[:60]))
+                return
             callInMainThread(self._onLoaded, data)
         except Exception as e:
             _done[0] = True
             from extractors.base import log
             log("_bgLoad error: {} -- trying TMDb fallback".format(e))
+            if getattr(self, "_closed", False):
+                log("Detail _bgLoad: screen closed during error handling, skipping fallback for {}".format(url[:60]))
+                return
             try:
-                fallback = _merge_tmdb_data(dict(self._item or {}))
+                fallback = _merge_tmdb_data(dict(item or {}))
+                if getattr(self, "_closed", False):
+                    return
                 if fallback and (fallback.get("plot") or fallback.get("poster")):
                     callInMainThread(self._onLoaded, fallback)
                 else:
@@ -2205,12 +2350,14 @@ class ArabicPlayerDetail(Screen):
                         u"فشل التحميل — {}".format(str(e)[:40]))
             except Exception as e2:
                 log("TMDb fallback failed: {}".format(e2))
-                callInMainThread(self["status"].setText,
-                    u"فشل التحميل — {}".format(str(e)[:40]))
+                if not getattr(self, "_closed", False):
+                    callInMainThread(self["status"].setText,
+                        u"فشل التحميل — {}".format(str(e)[:40]))
         finally:
             _wt.cancel()
 
     def _onCancel(self):
+        self._closed = True
         try:
             self.picLoad.PictureData.get().remove(self._paintPoster)
         except Exception:
@@ -2229,8 +2376,17 @@ class ArabicPlayerDetail(Screen):
             self["poster"].instance.setPixmap(ptr)
             self["poster"].show()
             self._poster_loaded = True
+        else:
+            # FIX: same silent-decode-failure gap as the preview callback.
+            my_log("_paintPoster (detail): native decode returned empty picture data")
 
     def _onLoaded(self, data):
+        # FIX: narrow residual race - callInMainThread schedules this
+        # asynchronously, so self._closed could flip True between the
+        # background thread's check and this actually running. Final
+        # safety net before touching self._item/UI widgets below.
+        if getattr(self, "_closed", False):
+            return
         if not data:
             self["status"].setText("تعذر تحميل الصفحة")
             return
@@ -2311,7 +2467,19 @@ class ArabicPlayerDetail(Screen):
         self["plot"].setText(_pt)
 
         self._servers = _sort_servers([s for s in data.get("servers", []) if s.get("url")])
-        self._episodes = [e for e in data.get("items", []) if e.get("type") == "episode"]
+        # FIX: this used to filter to ONLY type=="episode" items, silently
+        # discarding anything else - but a series hub page's season list
+        # (topcinema.py returns these with type=="series") was ALWAYS
+        # being thrown away right here, before ever reaching the screen.
+        # This is the actual, complete explanation for "no seasons
+        # appear": get_page() was correctly returning 3 season items the
+        # entire time (verified repeatedly against real site data), but
+        # this filter discarded all of them, so "Detail _onLoaded:
+        # items=0" in the logs reflected THIS filter's output, not a real
+        # absence of data from the extractor. Keep any item meant for
+        # navigation (episode siblings, seasons, or a hub's series list),
+        # not just ones literally typed "episode".
+        self._episodes = [e for e in data.get("items", []) if e.get("type") in ("episode", "series")]
 
         my_log("Detail _onLoaded: servers={}, items={}".format(len(self._servers), len(self._episodes)))
 
@@ -2321,18 +2489,37 @@ class ArabicPlayerDetail(Screen):
             or bool(self._episodes)
         )
 
-        # IMPORTANT: what to display is decided by what's actually present
-        # (self._episodes vs self._servers), not by the "type" label. An
-        # individual episode page is type="series" but has no
-        # sub-episodes of its own - it has servers, exactly like a movie.
-        # Gating on is_series meant every individual episode page always
-        # fell into the "no episodes available" branch and never even
-        # looked at self._servers, even when servers were correctly
-        # found (confirmed via logs showing servers=8 discarded here).
-        if self._episodes:
-            self["section"].setText(_single_line_text("الحلقات المتاحة: {}  |  اختر الحلقة المطلوبة".format(len(self._episodes)), width=90))
+        # FIX: a specific episode page has BOTH its own servers AND a
+        # sibling-episode list populated at the same time (confirmed on
+        # every site: arabseed, topcinema, wecima, faselhd) - the sibling
+        # list exists for "other episodes" navigation, but checking
+        # self._episodes first unconditionally meant it always won, so an
+        # individual episode's own servers were never shown. Selecting
+        # anything from that sibling list just opened another episode page
+        # with the identical problem - an infinite loop that could never
+        # reach a server. type=="episode" (a specific playable episode)
+        # must always prioritize its own servers; the episode-picker stays
+        # primary only for genuine series-hub pages.
+        item_type = data.get("type") or self._item.get("type")
+        episode_has_servers = (item_type == "episode" and self._servers)
+
+        if episode_has_servers:
+            self["section"].setText(_single_line_text("السيرفرات المتاحة: {}  |  اختر الجودة أو السيرفر".format(len(self._servers)), width=90))
+            self["menu"].setList(["{}. {}".format(i + 1, _single_line_text(s.get("name", "Server"), width=58, fallback="Server")) for i, s in enumerate(self._servers)])
+            self["status"].setText(self._status_hint("اختار سيرفر — OK"))
+        elif self._episodes:
+            # FIX: self._episodes can now hold seasons as well as
+            # episodes (see the widened filter above) - label the header
+            # accurately for whichever this list actually contains,
+            # instead of always saying "available episodes" even when
+            # showing a hub's season list.
+            _all_seasons = all(e.get("type") == "series" for e in self._episodes)
+            _list_label = "المواسم المتاحة" if _all_seasons else "الحلقات المتاحة"
+            _pick_hint = "اختار الموسم المطلوب" if _all_seasons else "اختار الحلقة المطلوبة"
+            _ok_hint = "اختار موسم — OK" if _all_seasons else "اختار حلقة — OK"
+            self["section"].setText(_single_line_text("{}: {}  |  {}".format(_list_label, len(self._episodes), _pick_hint), width=90))
             self["menu"].setList(["{}. {}".format(i + 1, _single_line_text(ep.get("title", "Episode"), width=58, fallback="حلقة")) for i, ep in enumerate(self._episodes)])
-            self["status"].setText(self._status_hint("اختار حلقة — OK"))
+            self["status"].setText(self._status_hint(_ok_hint))
         elif self._servers:
             self["section"].setText(_single_line_text("السيرفرات المتاحة: {}  |  اختر الجودة أو السيرفر".format(len(self._servers)), width=90))
             self["menu"].setList(["{}. {}".format(i + 1, _single_line_text(s.get("name", "Server"), width=58, fallback="Server")) for i, s in enumerate(self._servers)])
@@ -2390,6 +2577,7 @@ class ArabicPlayerDetail(Screen):
 
             cached = _get_cached_poster(url)
             if cached:
+                my_log("_downloadPoster (detail): using cached file for {}".format(url))
                 callInMainThread(self.picLoad.setPara, (self["poster"].instance.size().width(), self["poster"].instance.size().height(), 1, 1, 0, 1, "#000000"))
                 callInMainThread(self.picLoad.startDecode, cached)
                 return
@@ -2400,13 +2588,22 @@ class ArabicPlayerDetail(Screen):
             from urllib.parse import urlparse as _urlparse
             _p = _urlparse(url)
             referer = "{}://{}/".format(_p.scheme, _p.netloc)
+            my_log("_downloadPoster (detail): fetching {}".format(url))
             data = _fetch_poster_bytes(url, referer, timeout=10)
+            # FIX: this log line is the key diagnostic previously missing -
+            # without it, a quiet log was indistinguishable between "never
+            # ran" (e.g. this thread's poster_url check failed elsewhere),
+            # "ran and succeeded", and "ran, downloaded fine, but the
+            # native picLoad.startDecode() below silently failed to render
+            # it" - all three looked identical (no log output at all).
+            my_log("_downloadPoster (detail): downloaded {} bytes for {}".format(len(data) if data else 0, url))
 
             save_path = cache_path or "/tmp/ap_detail_{}.jpg".format(int(time.time()))
             with open(save_path, "wb") as f:
                 f.write(data)
             if not cache_path:
                 self._tmp_posters.append(save_path)
+            my_log("_downloadPoster (detail): saved to {}, handing to picLoad".format(save_path))
             callInMainThread(self.picLoad.setPara, (self["poster"].instance.size().width(), self["poster"].instance.size().height(), 1, 1, 0, 1, "#000000"))
             callInMainThread(self.picLoad.startDecode, save_path)
         except Exception as e:
@@ -2417,22 +2614,56 @@ class ArabicPlayerDetail(Screen):
         if idx < 0:
             return
 
-        # Mirrors _onLoaded's display logic exactly: what a click means is
-        # decided by what's actually present, not by the "type" label - an
-        # individual episode page is type="series" but has servers, not
-        # sub-episodes, and needs to behave like a movie here too.
-        if self._episodes:
-            if idx >= len(self._episodes):
-                return
-            ep = self._episodes[idx]
-            self.session.open(ArabicPlayerDetail, ep, self._site, "episode")
-        elif self._servers:
+        # FIX: must mirror _onLoaded's display priority exactly - a
+        # specific episode page has both its own servers and a
+        # sibling-episode list populated, and previously self._episodes
+        # was checked first unconditionally here too, so selecting what
+        # was actually a displayed server just opened another episode's
+        # page instead of extracting a stream (or, if the display fix
+        # above hadn't also been applied, silently selected the wrong
+        # thing entirely since display and selection disagreed on what
+        # index N meant).
+        data = self._data or {}
+        item_type = data.get("type") or self._item.get("type")
+        episode_has_servers = (item_type == "episode" and self._servers)
+
+        if episode_has_servers:
             if idx >= len(self._servers):
                 return
+            with self._extract_lock:
+                if self._extracting:
+                    return
+                self._extracting = True
+                self._extract_token += 1
+                token = self._extract_token
             server = self._servers[idx]
             self["status"].setText("Extracting stream...")
             self["status"].show()
-            threading.Thread(target=self._bgExtract, args=(server,), daemon=True).start()
+            threading.Thread(target=self._bgExtract, args=(server, token), daemon=True).start()
+        elif self._episodes:
+            if idx >= len(self._episodes):
+                return
+            ep = self._episodes[idx]
+            # FIX: self._episodes can now hold season items (type=="series")
+            # as well as actual episodes, since the over-restrictive filter
+            # above was widened. Use the item's own real type instead of
+            # always hardcoding "episode" - a season must open as
+            # m_type="series" so it correctly shows its own episode picker
+            # rather than being misidentified.
+            self.session.open(ArabicPlayerDetail, ep, self._site, ep.get("type", "episode"))
+        elif self._servers:
+            if idx >= len(self._servers):
+                return
+            with self._extract_lock:
+                if self._extracting:
+                    return
+                self._extracting = True
+                self._extract_token += 1
+                token = self._extract_token
+            server = self._servers[idx]
+            self["status"].setText("Extracting stream...")
+            self["status"].show()
+            threading.Thread(target=self._bgExtract, args=(server, token), daemon=True).start()
 
     def _toggleFavorite(self):
         base = self._data or self._item
@@ -2462,10 +2693,10 @@ class ArabicPlayerDetail(Screen):
             my_log("TMDb refresh failed: {}".format(e))
             callInMainThread(self["status"].setText, "فشل تحديث TMDb")
 
-    def _bgExtract(self, server):
+    def _bgExtract(self, server, token=None):
         try:
             from extractors.base import log
-            log("Detail _bgExtract: START extracting for server={}".format(server.get("name", "Unknown")))
+            log("Detail _bgExtract: START extracting for server={} (token={})".format(server.get("name", "Unknown"), token))
 
             extract_fn = None
             try:
@@ -2479,6 +2710,31 @@ class ArabicPlayerDetail(Screen):
 
             url, qual, final_ref = extract_fn(server["url"])
 
+            # FIX: same race as _bgLoad - extract_fn() can be slow (iframe
+            # chains, retries), and if the user backs out of this screen
+            # while it's running, self._item (touched downstream in
+            # _onStreamFound) can become inaccessible by the time this
+            # resumes. Using getattr with a default here (matching
+            # _onLoaded/_onStreamFound) instead of bare self._closed -
+            # confirmed via logs this bare access itself can raise
+            # AttributeError in some teardown timing, which is worse than
+            # the race it was meant to guard against.
+            if getattr(self, "_closed", False):
+                log("Detail _bgExtract: screen closed before extraction finished, discarding result")
+                return
+
+            # FIX: confirmed via logs that multiple extractions could run
+            # concurrently and interleave (Server 4 starting while Server
+            # 3's mirror-domain fallback loop was still active several
+            # seconds later). If a newer selection has superseded this
+            # one (token mismatch), discard this stale result instead of
+            # overwriting the newer extraction's in-progress or completed
+            # UI state.
+            if token is not None and token != getattr(self, "_extract_token", token):
+                log("Detail _bgExtract: superseded by a newer selection (token={}, current={}), discarding".format(
+                    token, getattr(self, "_extract_token", None)))
+                return
+
             if url:
                 log("Detail _bgExtract: SUCCESS! URL: {}".format(url))
                 callInMainThread(self._onStreamFound, url, qual, final_ref, server)
@@ -2487,9 +2743,21 @@ class ArabicPlayerDetail(Screen):
                 callInMainThread(self["status"].setText, "فشل استخراج الرابط — جرب سيرفر تاني")
         except Exception as e:
             log("Detail _bgExtract CRITICAL ERROR: {}".format(e))
-            callInMainThread(self["status"].setText, "خطأ في النظام: {}".format(str(e)[:30]))
+            if not getattr(self, "_closed", False):
+                callInMainThread(self["status"].setText, "خطأ في النظام: {}".format(str(e)[:30]))
+        finally:
+            # FIX: always release the guard, whatever happened, so the
+            # next OK press isn't permanently blocked by a completed
+            # (successful, failed, or superseded) extraction.
+            if token is not None:
+                with self._extract_lock:
+                    if token == self._extract_token:
+                        self._extracting = False
 
     def _onStreamFound(self, stream_url, quality, final_ref, server):
+        # FIX: same narrow residual race as _onLoaded above.
+        if getattr(self, "_closed", False):
+            return
         if not stream_url:
             self["status"].setText("{} — غير متاح، جرب سيرفر آخر".format(server["name"]))
             return
