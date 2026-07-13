@@ -87,6 +87,35 @@ def _poster_cache_path(url):
     url_hash = hashlib.md5(url.encode("utf-8", "ignore")).hexdigest()
     return os.path.join(_POSTER_CACHE_DIR, "{}.jpg".format(url_hash))
 
+def _normalize_poster_url(url):
+    """Normalize a poster URL exactly once, consistently, everywhere it's
+    used as a cache key or as the actual request URL.
+
+    FIX: confirmed via hash comparison that _refreshPreview's cache
+    pre-check used the RAW url (e.g. containing a literal "@" from an
+    unescaped IMDb-style filename), while the actual download/save step
+    normalized it first (quote(unquote(...)), turning "@" into "%40").
+    Same poster, two different MD5 hashes, two different cache file
+    paths - so the pre-check could NEVER find a file that was correctly
+    cached moments earlier under the other hash. This one function is now
+    the single source of truth for what "the URL" is, used identically by
+    the cache pre-check, the actual fetch, and the cache write - closing
+    that gap for every poster URL with special characters, not just this
+    one show.
+    """
+    if not url:
+        return url
+    if url.startswith("//"):
+        url = "https:" + url
+    try:
+        from urllib.parse import urlparse, quote, unquote, urlunparse
+        p = list(urlparse(url))
+        p[2] = quote(unquote(p[2]))
+        p[4] = quote(unquote(p[4]))
+        return urlunparse(p)
+    except Exception:
+        return url
+
 def _is_poster_cached(url):
     path = _poster_cache_path(url)
     return path and os.path.exists(path)
@@ -1531,6 +1560,7 @@ class ArabicPlayerHome(Screen):
         self["preview_info"].setText(_wrap_ui_text("  ".join(info_parts), width=36, max_lines=2) if info_parts else "")
 
         poster_url = item.get("poster") or item.get("image") or ""
+        poster_url = _normalize_poster_url(poster_url)
 
         with self._poster_lock:
             self._requested_poster_url = poster_url
@@ -1573,14 +1603,7 @@ class ArabicPlayerHome(Screen):
                 return
 
         try:
-            if url.startswith("//"): url = "https:" + url
-            try:
-                from urllib.parse import urlparse, quote, unquote, urlunparse
-                p = list(urlparse(url))
-                p[2] = quote(unquote(p[2]))
-                p[4] = quote(unquote(p[4]))
-                url = urlunparse(p)
-            except Exception: pass
+            url = _normalize_poster_url(url)
 
             cached = _get_cached_poster(url)
             if cached:
@@ -2564,16 +2587,9 @@ class ArabicPlayerDetail(Screen):
     def _downloadPoster(self, url):
         try:
             if not url: return
-            if url.startswith("//"): url = "https:" + url
+            url = _normalize_poster_url(url)
 
             import urllib.request as urllib2
-            try:
-                from urllib.parse import urlparse, quote, unquote, urlunparse
-                p = list(urlparse(url))
-                p[2] = quote(unquote(p[2]))
-                p[4] = quote(unquote(p[4]))
-                url = urlunparse(p)
-            except Exception: pass
 
             cached = _get_cached_poster(url)
             if cached:

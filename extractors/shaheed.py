@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Shaheed4u extractor - Fixed for current site structure (shaied4u.co)
+Shaheed4u extractor - Fixed for current site structure (shhahidd4u.net)
 Supports: Movies, Series, TV Shows, Wrestling Shows
+Uses base.fetch for all HTTP requests.
 """
 
 import re
 import sys
 import json
 import time
-from .base import fetch, urljoin, log
+from .base import fetch, urljoin, log, resolve_iframe_chain
 
 if sys.version_info[0] == 3:
     from urllib.parse import quote_plus, urlparse, quote
@@ -19,66 +20,102 @@ else:
     from HTMLParser import HTMLParser
     html_unescape = HTMLParser().unescape
 
-# Updated primary domain
+# Updated domains (try the new one first, then the redirect)
 DOMAINS = [
+    "https://shhahidd4u.net/",
     "https://shaied4u.co/",
-    "https://shahidd4u.com/",   # fallback
 ]
 
-VALID_HOST_MARKERS = ("shaied4u.co", "shahidd4u.com")
 BLOCKED_HOST_MARKERS = ("alliance4creativity.com",)
 MAIN_URL = None
 _HOME_HTML = None
 _HOME_LAST_FETCH = 0
 
-
-def _host(url):
-    try:
-        return (urlparse(url).netloc or "").lower()
-    except Exception:
-        return ""
-
+# ----------------------------------------------------------------------
+# Helper functions using base.fetch
+# ----------------------------------------------------------------------
 
 def _is_blocked_page(html, final_url=""):
+    """Enhanced blocked/challenge detection."""
     text = (html or "").lower()
     final = (final_url or "").lower()
     if not text:
         return True
-    if "just a moment" in text and "cf-chl" in text:
-        return True
-    if "alliance for creativity" in text:
+    challenge_patterns = [
+        "just a moment", "cf-chl", "cf-turnstile",
+        "challenge", "cloudflare", "browser check",
+        "access denied", "blocked", "forbidden",
+        "captcha", "verify you are human",
+        "cf-browser-verification", "security check",
+    ]
+    if any(p in text for p in challenge_patterns):
         return True
     if any(m in final for m in BLOCKED_HOST_MARKERS):
         return True
+    if len(text) < 500 and ("error" in text or "block" in text):
+        return True
     return False
 
+def _is_valid_category_page(html):
+    """Check if the HTML contains typical category elements."""
+    if not html:
+        return False
+    if re.search(r'class="[^"]*show-card[^"]*"', html, re.I):
+        return True
+    if re.search(r'href="[^"]*/(film|episode|series|watch)/[^"]*"', html, re.I):
+        return True
+    if '<title>' in html and ('افلام' in html or 'مسلسلات' in html):
+        if not _is_blocked_page(html) and len(html) > 5000:
+            return True
+    return False
 
 def _site_root(url):
     parts = urlparse(url)
     return "{}://{}/".format(parts.scheme or "https", parts.netloc)
 
-
 def _get_base(force_refresh=False):
+    """Determine the working base URL using base.fetch."""
     global MAIN_URL, _HOME_HTML, _HOME_LAST_FETCH
     if MAIN_URL and not force_refresh and (time.time() - _HOME_LAST_FETCH) < 21600:
+        log("Shaheed: using cached base {}".format(MAIN_URL))
         return MAIN_URL
+
     for domain in DOMAINS:
-        log("Shaheed: probing {}".format(domain))
+        log("Shaheed: probing {} with base.fetch".format(domain))
         html, final_url = fetch(domain, referer=domain)
+        if not html:
+            log("Shaheed: no response from {}".format(domain))
+            continue
         final_url = final_url or domain
         if _is_blocked_page(html, final_url):
-            log("Shaheed: blocked {}".format(final_url))
+            log("Shaheed: blocked or invalid at {}".format(final_url))
             continue
-        if html and ("شاهد" in html or "shahid" in html.lower() or "film" in html.lower()):
+        if html and ("شاهد" in html or "shahid" in html.lower() or "film" in html.lower() or "مسلسل" in html):
             MAIN_URL = _site_root(final_url)
             _HOME_HTML = html
             _HOME_LAST_FETCH = time.time()
             log("Shaheed: selected base {}".format(MAIN_URL))
             return MAIN_URL
+
+    # If all fail, use the first domain as fallback
     MAIN_URL = DOMAINS[0]
-    log("Shaheed: fallback base {}".format(MAIN_URL))
+    log("Shaheed: fallback base {} (may not be reachable)".format(MAIN_URL))
     return MAIN_URL
 
+def _fetch_live(url, referer=None):
+    """Fetch a page; if blocked, refresh the base and retry once."""
+    ref = referer or _get_base()
+    log("Shaheed: _fetch_live for {}".format(url))
+    html, final_url = fetch(url, referer=ref)
+    if _is_blocked_page(html, final_url):
+        log("Shaheed: blocked page, refreshing base and retrying")
+        _get_base(force_refresh=True)
+        html, final_url = fetch(url, referer=_get_base())
+        if _is_blocked_page(html, final_url):
+            log("Shaheed: still blocked after refresh")
+            return "", ""
+    log("Shaheed: fetch OK, {} bytes".format(len(html) if html else 0))
+    return html, final_url or url
 
 def _normalize_url(url):
     if not url:
@@ -90,22 +127,56 @@ def _normalize_url(url):
         return urljoin(_get_base(), url)
     return url
 
+# ----------------------------------------------------------------------
+# Server extraction (unchanged)
+# ----------------------------------------------------------------------
 
-def _fetch_live(url, referer=None):
-    """Fetch with extra headers to avoid anti-bot blocks."""
-    ref = referer or _get_base()
-    # Use custom headers via fetch if it supports a headers parameter,
-    # otherwise we rely on the default fetch which may be configured elsewhere.
-    # We can pass custom headers by modifying the fetch call.
-    # Since the base fetch function might not accept a headers dict,
-    # we can add a wrapper that uses requests directly? But we'll assume
-    # the base fetch is sufficient, but we can try to add headers via a custom request.
-    # To be safe, we'll use the base fetch which already uses a session.
-    h, final_url = fetch(url, referer=ref)
-    if _is_blocked_page(h, final_url):
-        return "", ""
-    return h, final_url or url
+def _extract_servers_from_watch(html, base_url):
+    """Parse the watch page HTML to extract server information."""
+    servers = []
+    match = re.search(r'let\s+securedServers\s*=\s*(\[.*?\]);', html, re.DOTALL | re.I)
+    if not match:
+        match = re.search(r'securedServers\s*=\s*(\[.*?\]);', html, re.DOTALL | re.I)
+    if match:
+        try:
+            servers_data = json.loads(match.group(1))
+            for idx, server in enumerate(servers_data):
+                name = server.get("name", "Server {}".format(idx+1))
+                hash_val = server.get("hash")
+                if hash_val:
+                    embed_url = "{}/embed-stream/{}".format(base_url.rstrip('/'), quote(hash_val))
+                    servers.append({
+                        "name": name,
+                        "url": embed_url,
+                        "type": "embed"
+                    })
+            log("Shaheed: extracted {} servers from securedServers".format(len(servers)))
+            return servers
+        except Exception as e:
+            log("Shaheed: failed to parse securedServers: {}".format(e))
 
+    # Fallback: iframes
+    iframe_matches = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I)
+    for src in iframe_matches:
+        if src.startswith("//"):
+            src = "https:" + src
+        elif src.startswith("/"):
+            src = urljoin(base_url, src)
+        skip_domains = ['youtube', 'facebook', 'twitter', 'google', 'doubleclick',
+                        'analytics', 'googletagmanager', 'cloudflareinsights',
+                        'adsco.re', 'intelligenceadx']
+        if any(x in src.lower() for x in skip_domains):
+            continue
+        servers.append({
+            "name": "Embed Player",
+            "url": src,
+            "type": "iframe"
+        })
+    return servers
+
+# ----------------------------------------------------------------------
+# Category and item extraction (unchanged logic, just uses _fetch_live)
+# ----------------------------------------------------------------------
 
 def get_categories():
     base = _get_base().rstrip("/")
@@ -127,16 +198,25 @@ def get_categories():
         {"title": "🌙 مسلسلات رمضان 2026", "url": base + "/category/مسلسلات-رمضان-2026", "type": "category", "_action": "category"},
     ]
 
-
 def get_category_items(url):
+    log("Shaheed: get_category_items for {}".format(url))
     html, _ = _fetch_live(url)
     if not html:
+        log("Shaheed: no HTML for category")
         return []
+
+    if not _is_valid_category_page(html):
+        log("Shaheed: category page invalid, refreshing base and retrying")
+        _get_base(force_refresh=True)
+        html, _ = _fetch_live(url)
+        if not html or not _is_valid_category_page(html):
+            log("Shaheed: still invalid after refresh, returning empty")
+            return []
 
     items = []
     seen_urls = set()
 
-    # Extract show-card entries (robust to attribute order)
+    # Extract show-card entries
     for match in re.finditer(r'<a\s[^>]*class="[^"]*show-card[^"]*"[^>]*>(.*?)</a>', html, re.DOTALL | re.I):
         tag_open = html[match.start():match.start() + 300]
         card_content = match.group(1)
@@ -217,11 +297,10 @@ def get_category_items(url):
                 "_action": "details",
             })
 
-    # Pagination - fixed logic
+    # Pagination
     current_page = None
     max_page = None
 
-    # Find current page from the highlighted button
     curr_match = re.search(
         r'<button[^>]+class="[^"]*page-link[^"]*cursor-normal[^"]*"[^>]*>(\d+)</button>',
         html, re.I
@@ -229,7 +308,6 @@ def get_category_items(url):
     if curr_match:
         current_page = int(curr_match.group(1))
 
-    # Find all page numbers from onclick arguments
     page_nums = set()
     for match in re.finditer(r"updateQuery\('page',\s*(\d+)\)", html):
         page_nums.add(int(match.group(1)))
@@ -248,7 +326,6 @@ def get_category_items(url):
     log("Shaheed: {} -> {} items".format(url, len(items)))
     return items
 
-
 def search(query, page=1):
     base = _get_base()
     url = base + "/search?s=" + quote_plus(query)
@@ -259,6 +336,9 @@ def search(query, page=1):
         return []
     return get_category_items(url)
 
+# ----------------------------------------------------------------------
+# get_page – fetch details, servers, and episode list
+# ----------------------------------------------------------------------
 
 def get_page(url):
     html, final_url = _fetch_live(url)
@@ -277,6 +357,7 @@ def get_page(url):
         log("Shaheed: get_page failed for {}".format(url))
         return result
 
+    # Metadata
     title_match = re.search(r'<title>(.*?)</title>', html)
     if title_match:
         title = html_unescape(title_match.group(1))
@@ -292,64 +373,79 @@ def get_page(url):
     if poster_match:
         result["poster"] = _normalize_url(poster_match.group(1))
 
-    # Extract servers from JavaScript array
-    servers_pattern = r'let\s+servers\s*=\s*JSON\.parse\(\'([^\']+)\'\)'
-    match = re.search(servers_pattern, html)
-    if match:
-        try:
-            servers_json = match.group(1).replace('\\"', '"')
-            servers_data = json.loads(servers_json)
-            for server in servers_data:
-                if server.get("url"):
-                    result["servers"].append({
-                        "name": server.get("name", "Server"),
-                        "url": server["url"],
-                        "type": "embed"
+    # Find watch URL
+    watch_url = None
+    if "/watch/" in url:
+        watch_url = url
+    else:
+        watch_link_match = re.search(r'<a[^>]+href=["\']([^"\']+/watch/[^"\']*)["\'][^>]*>.*?مشاهدة', html, re.I | re.S)
+        if watch_link_match:
+            watch_url = _normalize_url(watch_link_match.group(1))
+        else:
+            watch_link_match = re.search(r'<a[^>]+class=["\'][^"\']*watch[^"\']*["\'][^>]+href=["\']([^"\']+)["\']', html, re.I)
+            if watch_link_match:
+                watch_url = _normalize_url(watch_link_match.group(1))
+
+    watch_html = None
+    if watch_url:
+        watch_html, _ = _fetch_live(watch_url)
+    else:
+        if "/watch/" in url:
+            watch_html = html
+            watch_url = url
+
+    if watch_html:
+        base_for_embed = _get_base().rstrip('/')
+        servers = _extract_servers_from_watch(watch_html, base_for_embed)
+        if servers:
+            result["servers"] = servers
+            log("Shaheed: found {} servers on watch page".format(len(servers)))
+        else:
+            log("Shaheed: no servers found on watch page")
+
+        # Extract episode list (right sidebar)
+        eps_container_match = re.search(r'<div[^>]*id=["\']eps["\'][^>]*>(.*?)</div>', watch_html, re.S | re.I)
+        if not eps_container_match:
+            eps_container_match = re.search(r'<div[^>]*class=["\'][^"\']*eps[^"\']*["\'][^>]*>(.*?)</div>', watch_html, re.S | re.I)
+        if eps_container_match:
+            eps_html = eps_container_match.group(1)
+            for ep_match in re.finditer(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', eps_html, re.S | re.I):
+                ep_url = _normalize_url(ep_match.group(1))
+                if not ep_url or ep_url == watch_url:
+                    continue
+                ep_inner = ep_match.group(2)
+                ep_text = re.sub(r'<[^>]+>', '', ep_inner).strip()
+                ep_num_match = re.search(r'الحلقة\s*(\d+)', ep_text)
+                if ep_num_match:
+                    ep_title = "حلقة {}".format(ep_num_match.group(1))
+                else:
+                    ep_title = ep_text or "حلقة"
+                if ep_url != watch_url and ep_url not in [item.get("url") for item in result["items"]]:
+                    result["items"].append({
+                        "title": ep_title,
+                        "url": ep_url,
+                        "type": "episode",
+                        "_action": "details",
                     })
-            log("Shaheed: extracted {} servers from JSON".format(len(result["servers"])))
-        except Exception as e:
-            log("Shaheed: failed to parse servers JSON: {}".format(e))
+        else:
+            log("Shaheed: no episode list found on watch page")
 
-    if not result["servers"]:
-        alt_pattern = r'servers\s*=\s*(\[.*?\])'
-        match = re.search(alt_pattern, html, re.DOTALL)
-        if match:
-            try:
-                for server in json.loads(match.group(1)):
-                    if server.get("url"):
-                        result["servers"].append({
-                            "name": server.get("name", "Server"),
-                            "url": server["url"],
-                            "type": "embed"
-                        })
-            except Exception as e:
-                log("Shaheed: failed to parse alt servers JSON: {}".format(e))
-
-    if not result["servers"]:
-        skip_domains = ['youtube', 'facebook', 'twitter', 'google', 'doubleclick',
-                        'analytics', 'googletagmanager', 'cloudflareinsights',
-                        'adsco.re', 'intelligenceadx']
-        embed_domains = ['fastvid.cam', 'streamtape', 'doodstream', 'voe',
-                         'filemoon', 'rpmvip', 'upn.one', 'cleantechworld',
-                         'streamwish', 'mixdrop', 'vidguard']
-        for iframe_match in re.finditer(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I):
-            iframe_url = iframe_match.group(1)
-            if any(x in iframe_url.lower() for x in skip_domains):
-                continue
-            if iframe_url.startswith("//"):
-                iframe_url = "https:" + iframe_url
-            elif iframe_url.startswith("/"):
-                p = urlparse(final_url or url)
-                iframe_url = "{}://{}{}".format(p.scheme, p.netloc, iframe_url)
-            if any(d in iframe_url.lower() for d in embed_domains):
-                result["servers"].append({"name": "Embed Player", "url": iframe_url, "type": "iframe"})
-
-    if "/مسلسلات" in url or "series" in url.lower() or "/عروض" in url or "/post/" in url:
+    # Determine type
+    if result["items"]:
         result["type"] = "series"
+    elif "مسلسلات" in url or "series" in url.lower() or "/عروض" in url or "/post/" in url:
+        result["type"] = "series"
+    elif "/episode/" in url:
+        result["type"] = "episode"
+    else:
+        result["type"] = "movie"
 
-    log("Shaheed: {} -> found {} servers".format(url, len(result["servers"])))
+    log("Shaheed: {} -> found {} servers, {} episodes".format(url, len(result["servers"]), len(result["items"])))
     return result
 
+# ----------------------------------------------------------------------
+# extract_stream – resolve the embed URL
+# ----------------------------------------------------------------------
 
 def extract_stream(url):
     log("Shaheed extract_stream: {}".format(url))
@@ -360,10 +456,22 @@ def extract_stream(url):
         if "Referer=" in parts[1]:
             referer = parts[1].split("Referer=")[1].strip()
 
-    from .base import resolve_iframe_chain
+    if url.startswith("/"):
+        url = urljoin(_get_base(), url)
+
     stream, _ = resolve_iframe_chain(url, referer=referer, max_depth=10)
     if stream:
         return stream, None, referer
+
+    # Fallback: try a direct fetch to find video source
+    html, _ = fetch(url, referer=referer)
+    if html:
+        video_src = re.search(r'(?:src|data-src)=["\']([^"\']+\.(?:mp4|m3u8|webm)[^"\']*)["\']', html, re.I)
+        if video_src:
+            return video_src.group(1), None, referer
+        iframe_src = re.search(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I)
+        if iframe_src:
+            return extract_stream(iframe_src.group(1))
 
     from .base import extract_stream as base_extract_stream
     return base_extract_stream(url)

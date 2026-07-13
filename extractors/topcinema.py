@@ -26,6 +26,33 @@ def _normalize_url(url):
     return url
 
 _LEADING_TYPE_WORDS = ("فيلم", "افلام", "مسلسل", "مسلسلات", "انمي", "برنامج", "عرض")
+
+# FIX: season titles use Arabic ordinal WORDS (الاول, الثاني, الثالث...),
+# not digits, so a plain \d+ regex can't extract a season number for
+# sorting. Covers up to season 10, comfortably beyond any real show on
+# this site.
+_ARABIC_ORDINALS = {
+    "الاول": 1, "الأول": 1,
+    "الثاني": 2,
+    "الثالث": 3,
+    "الرابع": 4,
+    "الخامس": 5,
+    "السادس": 6,
+    "السابع": 7,
+    "الثامن": 8,
+    "التاسع": 9,
+    "العاشر": 10,
+}
+
+
+def _season_number(title):
+    for word, num in _ARABIC_ORDINALS.items():
+        if word in title:
+            return num
+    m = re.search(r'(?<!\d)(\d+)(?!\d)', title)
+    return int(m.group(1)) if m else 9999
+
+
 _TITLE_NOISE_PHRASES = (
     "مشاهدة وتحميل", "مشاهدة وتحميل مباشر", "مشاهدة", "تحميل",
     "مترجمة", "مترجم", "مدبلجة", "مدبلج",
@@ -198,6 +225,18 @@ def get_page(url):
 
     poster_m = re.search(r'property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
     poster = _normalize_url(poster_m.group(1)) if poster_m else ""
+    if not poster:
+        # FIX: confirmed via real page inspection - season pages have NO
+        # og:image meta tag at all (unlike movie/episode/hub pages, which
+        # all have one). This is a genuine site-side gap, not a broken
+        # regex. Fall back to the first real content image on the page
+        # (skipping logos/icons), which is the show's own poster reused
+        # on the season listing.
+        for img_m in re.finditer(r'<img[^>]+(?:data-src|src)=["\']([^"\']+)["\']', html, re.I):
+            candidate = img_m.group(1)
+            if "wp-content/uploads" in candidate and "logo" not in candidate.lower():
+                poster = _normalize_url(candidate)
+                break
 
     plot_m = re.search(r'class=["\']description["\'][^>]*>(.*?)</', html, re.S | re.I)
     plot = _clean_title(re.sub(r'<[^>]+>', '', plot_m.group(1))) if plot_m else ""
@@ -334,8 +373,16 @@ def get_page(url):
                     "title": ("حلقة " + e_num_m.group(1)) if e_num_m else e_text,
                     "url": e_link_norm,
                     "type": "episode",
-                    "_action": "item"
+                    "_action": "item",
+                    "_num": int(e_num_m.group(1)) if e_num_m else 9999,
                 })
+            # FIX: site lists episodes newest-first in the raw HTML: the
+            # old code preserved that order, so on-screen "1." showed the
+            # LAST episode instead of episode 1. Sort ascending by the
+            # real extracted episode number.
+            episodes.sort(key=lambda e: e["_num"])
+            for e in episodes:
+                del e["_num"]
 
         if not episodes:
             seasons_m = re.search(
@@ -356,12 +403,19 @@ def get_page(url):
                     s_text = h3_m.group(1).strip() if h3_m else re.sub(r'<[^>]+>', ' ', s_inner).strip()
                     s_link_norm = _normalize_url(s_link)
                     if s_link_norm and s_link_norm != final_url:
+                        s_clean = _clean_title(s_text) or "موسم"
                         found_seasons.append({
-                            "title": _clean_title(s_text) or "موسم",
+                            "title": s_clean,
                             "url": s_link_norm,
                             "type": "series",
-                            "_action": "item"
+                            "_action": "item",
+                            "_num": _season_number(s_text),
                         })
+            # FIX: same inverted-numbering issue as episodes above, but
+            # season titles use Arabic ordinal words instead of digits.
+            found_seasons.sort(key=lambda s: s["_num"])
+            for s in found_seasons:
+                del s["_num"]
 
             # NOTE: previously auto-descended a pure hub page straight to
             # Season 1 Episode 1's own servers, to avoid an extra picker
@@ -453,8 +507,14 @@ def get_page(url):
                 "title": "حلقة " + e_num if e_num.isdigit() else e_num,
                 "url": full_link,
                 "type": "episode",
-                "_action": "item"
+                "_action": "item",
+                "_num": int(e_num) if e_num.isdigit() else 9999,
             })
+        # FIX: same inverted-numbering issue as the season-page episode
+        # list above - sort ascending by real episode number.
+        episodes.sort(key=lambda e: e["_num"])
+        for e in episodes:
+            del e["_num"]
 
     # FIX: previously ANY non-empty episodes list (even alongside real
     # servers) set type="series" - meaning an actual individual episode
